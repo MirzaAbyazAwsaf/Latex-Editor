@@ -1,0 +1,26 @@
+// Each item: label shown in menu, detail hint, insert text with ${} cursor spot,
+// or an aiAction ('ai' | 'fix' | 'rewrite') to focus the AI terminal.
+
+export const SLASH_COMMANDS = [
+  { label: '/section', detail: 'Section heading', insert: '\\section{${}}' },
+  { label: '/subsection', detail: 'Subsection heading', insert: '\\subsection{${}}' },
+  { label: '/subsubsection', detail: 'Subsubsection heading', insert: '\\subsubsection{${}}' },
+  { label: '/itemize', detail: 'Bulleted list', insert: '\\begin{itemize}\n\\item ${}\n\\end{itemize}' },
+  { label: '/enumerate', detail: 'Numbered list', insert: '\\begin{enumerate}\n\\item ${}\n\\end{enumerate}' },
+  { label: '/equation', detail: 'Display equation', insert: '\\begin{equation}\n${}\n\\end{equation}' },
+  { label: '/align', detail: 'Aligned equations', insert: '\\begin{align}\n${}\n\\end{align}' },
+  { label: '/figure', detail: 'Figure float', insert: '\\begin{figure}[htbp]\n\\centering\n\\includegraphics[width=0.8\\linewidth]{${}}\n\\caption{}\n\\label{}\n\\end{figure}' },
+  { label: '/table', detail: 'Table float', insert: '\\begin{table}[htbp]\n\\centering\n\\begin{tabular}{${ll}}\n & \\\\\n\\end{tabular}\n\\caption{}\n\\label{}\n\\end{table}' },
+  { label: '/bold', detail: 'Bold text', insert: '\\textbf{${}}' },
+  { label: '/italic', detail: 'Italic text', insert: '\\textit{${}}' },
+  { label: '/cite', detail: 'Citation', insert: '\\cite{${}}' },
+  { label: '/ref', detail: 'Reference label', insert: '\\ref{${}}' },
+  { label: '/label', detail: 'Label', insert: '\\label{${}}' },
+  { label: '/frac', detail: 'Fraction', insert: '\\frac{${}}{}' },
+  { label: '/sum', detail: 'Summation', insert: '\\sum_{${}}^{}' },
+  { label: '/integral', detail: 'Integral', insert: '\\int_{${}}^{}' },
+  { label: '/texttt', detail: 'Monospace text', insert: '\\texttt{${}}' },
+  { label: '/ai', detail: 'Ask the AI assistant', aiAction: 'ai' },
+  { label: '/fix', detail: 'Fix last compile error with AI', aiAction: 'fix' },
+  { label: '/rewrite', detail: 'Rewrite selection with AI', aiAction: 'rewrite' },
+]
