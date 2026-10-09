@@ -1,17 +1,39 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api'
 import Editor from './components/Editor'
+import FileTree from './components/FileTree'
 import PdfViewer from './components/PdfViewer'
 import ErrorPanel from './components/ErrorPanel'
 import AiTerminal from './components/AiTerminal'
+import { ImagePicker, ImagePreview } from './components/ImageModal'
 import './App.css'
 
 const ENGINES = ['pdflatex', 'xelatex', 'lualatex']
 const AUTOSAVE_MS = 1500
+const IMAGE_RE = /\.(png|jpe?g|gif|svg|bmp|webp)$/i
+
+const isImage = (p) => IMAGE_RE.test(p)
+
+function collectImages(nodes, acc = []) {
+  for (const n of nodes) {
+    if (n.kind === 'folder') collectImages(n.children || [], acc)
+    else if (isImage(n.path)) acc.push(n.path)
+  }
+  return acc
+}
+
+const clamp = (v, min, max) => Math.min(Math.max(v, min), max)
+
+function loadWidth(key, fallback) {
+  const v = Number(localStorage.getItem(key))
+  return Number.isFinite(v) && v > 0 ? v : fallback
+}
 
 export default function App() {
   const [projects, setProjects] = useState([])
   const [project, setProject] = useState(null)
+  const [tree, setTree] = useState([])
+  const [activePath, setActivePath] = useState('main.tex')
   const [doc, setDoc] = useState('')
   const [saveState, setSaveState] = useState('saved') // saved | saving | dirty | error
   const [compile, setCompile] = useState({ running: false, result: null, elapsed: 0 })
@@ -21,13 +43,21 @@ export default function App() {
   const [aiModels, setAiModels] = useState([])
   const [aiModel, setAiModel] = useState('')
   const [engine, setEngine] = useState('pdflatex')
+  const [preview, setPreview] = useState(null)
+  const [showPicker, setShowPicker] = useState(false)
+  const [sidebarW, setSidebarW] = useState(() => loadWidth('sidebarW', 240))
+  const [rightW, setRightW] = useState(() =>
+    loadWidth('rightW', Math.min(720, Math.round(window.innerWidth * 0.42))),
+  )
 
   const editorViewRef = useRef(null)
   const saveTimerRef = useRef(null)
   const docRef = useRef('')
+  const activePathRef = useRef('main.tex')
   const lastErrorRef = useRef(null)
   const compileTimerRef = useRef(null)
   docRef.current = doc
+  activePathRef.current = activePath
 
   const contextForAi = useCallback(() => {
     const view = editorViewRef.current
@@ -54,14 +84,22 @@ export default function App() {
   }, [])
 
   const openProject = async (p) => {
-    const file = await api.readFile(p.id)
+    const file = await api.readFile(p.id, p.main_file)
+    const treeData = await api.getTree(p.id)
     setProject(p)
     setEngine(p.engine)
+    setActivePath(p.main_file)
     setDoc(file.content)
+    setTree(treeData)
     setSaveState('saved')
     setPdfUrl(`/api/projects/${p.id}/pdf?t=${Date.now()}`)
     setCompile({ running: false, result: null, elapsed: 0 })
   }
+
+  const refreshTree = useCallback(async () => {
+    if (!project) return
+    setTree(await api.getTree(project.id))
+  }, [project])
 
   // ---------- save ----------
   const saveNow = useCallback(async () => {
@@ -69,7 +107,7 @@ export default function App() {
     clearTimeout(saveTimerRef.current)
     setSaveState('saving')
     try {
-      await api.writeFile(project.id, docRef.current)
+      await api.writeFile(project.id, docRef.current, activePathRef.current)
       setSaveState('saved')
     } catch (e) {
       setSaveState('error')
@@ -83,6 +121,169 @@ export default function App() {
     clearTimeout(saveTimerRef.current)
     saveTimerRef.current = setTimeout(() => saveNow(), AUTOSAVE_MS)
   }, [saveNow])
+
+  // ---------- file tree actions ----------
+  const openFile = useCallback(
+    async (path) => {
+      if (!project || path === activePathRef.current) return
+      if (isImage(path)) {
+        setPreview(path)
+        return
+      }
+      if (/\.pdf$/i.test(path)) {
+        window.open(api.rawUrl(project.id, path), '_blank')
+        return
+      }
+      await saveNow()
+      const file = await api.readFile(project.id, path)
+      setActivePath(path)
+      setDoc(file.content)
+    },
+    [project, saveNow],
+  )
+
+  const uploadImage = useCallback(
+    async (file, dir) => {
+      if (!project) return
+      try {
+        await api.uploadFile(project.id, file, dir)
+        await refreshTree()
+      } catch (e) {
+        alert('Upload failed: ' + e.message)
+      }
+    },
+    [project, refreshTree],
+  )
+
+  const insertImage = useCallback(
+    (path) => {
+      setPreview(null)
+      setShowPicker(false)
+      const view = editorViewRef.current
+      if (!view) return
+      const snippet = `\\includegraphics[width=\\linewidth]{${path}}`
+      const sel = view.state.selection.main
+      view.dispatch({
+        changes: { from: sel.from, to: sel.to, insert: snippet },
+        selection: { anchor: sel.from + snippet.length },
+      })
+      view.focus()
+      setSaveState('dirty')
+      clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = setTimeout(() => saveNow(), AUTOSAVE_MS)
+    },
+    [saveNow],
+  )
+
+  const createFile = useCallback(
+    async (path) => {
+      if (!project) return
+      try {
+        await api.createFile(project.id, path)
+        await refreshTree()
+        await openFile(path)
+      } catch (e) {
+        alert('Could not create file: ' + e.message)
+      }
+    },
+    [project, refreshTree, openFile],
+  )
+
+  const createFolder = useCallback(
+    async (path) => {
+      if (!project) return
+      try {
+        await api.createFolder(project.id, path)
+        await refreshTree()
+      } catch (e) {
+        alert('Could not create folder: ' + e.message)
+      }
+    },
+    [project, refreshTree],
+  )
+
+  const renameEntry = useCallback(
+    async (from, to) => {
+      if (!project) return
+      try {
+        await api.renameEntry(project.id, from, to)
+        setActivePath((cur) =>
+          cur === from ? to : cur.startsWith(from + '/') ? to + cur.slice(from.length) : cur,
+        )
+        setProject((p) => (p && p.main_file === from ? { ...p, main_file: to } : p))
+        await refreshTree()
+      } catch (e) {
+        alert('Could not rename: ' + e.message)
+      }
+    },
+    [project, refreshTree],
+  )
+
+  const deleteEntry = useCallback(
+    async (node) => {
+      if (!project) return
+      const label = node.kind === 'folder' ? `folder "${node.name}" and its contents` : `"${node.name}"`
+      if (!window.confirm(`Move ${label} to the recycle bin?`)) return
+      try {
+        await api.deleteEntry(project.id, node.path)
+        const wasActive = activePathRef.current === node.path || activePathRef.current.startsWith(node.path + '/')
+        await refreshTree()
+        if (wasActive) {
+          const fallback = project.main_file.startsWith(node.path + '/') || project.main_file === node.path ? null : project.main_file
+          setActivePath(fallback || 'main.tex')
+          try {
+            const file = await api.readFile(project.id, fallback || 'main.tex')
+            setDoc(file.content)
+          } catch {
+            setDoc('')
+          }
+        }
+      } catch (e) {
+        alert('Could not delete: ' + e.message)
+      }
+    },
+    [project, refreshTree],
+  )
+
+  const setMainFile = useCallback(
+    async (path) => {
+      if (!project) return
+      const p = await api.patchProject(project.id, { main_file: path })
+      setProject(p)
+    },
+    [project],
+  )
+
+  // ---------- pane resize ----------
+  const onDragStart = (which) => (e) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startSidebar = sidebarW
+    const startRight = rightW
+    const move = (ev) => {
+      const dx = ev.clientX - startX
+      if (which === 'sidebar') setSidebarW(clamp(startSidebar + dx, 150, 480))
+      else setRightW(clamp(startRight - dx, 240, window.innerWidth - 240))
+    }
+    const up = () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      setSidebarW((w) => {
+        localStorage.setItem('sidebarW', String(w))
+        return w
+      })
+      setRightW((w) => {
+        localStorage.setItem('rightW', String(w))
+        return w
+      })
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }
 
   // ---------- compile ----------
   const doCompile = useCallback(async () => {
@@ -100,6 +301,7 @@ export default function App() {
       lastErrorRef.current = res.errors?.[0] ?? null
       setCompile({ running: false, result: res, elapsed: res.duration_ms })
       if (res.pdf_url) setPdfUrl(`/api/projects/${project.id}/pdf?t=${Date.now()}`)
+      else setPdfUrl(null)
       if (res.status === 'ok') setRightTab('pdf')
     } catch (e) {
       setCompile({
@@ -231,25 +433,68 @@ export default function App() {
       </header>
 
       <main className="workspace">
+        <aside className="sidebar" style={{ flex: `0 0 ${sidebarW}px` }}>
+          <FileTree
+            tree={tree}
+            activePath={activePath}
+            mainFile={project.main_file}
+            onOpen={openFile}
+            onCreateFile={createFile}
+            onCreateFolder={createFolder}
+            onRename={renameEntry}
+            onDelete={deleteEntry}
+            onSetMain={setMainFile}
+            onUpload={uploadImage}
+          />
+        </aside>
+
+        <div className="resizer" onMouseDown={onDragStart('sidebar')} />
+
         <section className="editor-pane">
           <Editor
-            key={project.id}
+            key={`${project.id}:${activePath}`}
             doc={doc}
             onChange={onChange}
             onSave={saveNow}
             onCompile={doCompile}
             onReady={onEditorReady}
             onAiAction={startAiAction}
+            onInsertImage={() => setShowPicker(true)}
           />
         </section>
 
-        <aside className="right-pane">
+        <div className="resizer" onMouseDown={onDragStart('right')} />
+
+        <aside className="right-pane" style={{ flex: `0 0 ${rightW}px` }}>
           <nav className="tabs">
-            <button className={rightTab === 'pdf' ? 'active' : ''} onClick={() => setRightTab('pdf')}>PDF</button>
+            <button className={rightTab === 'pdf' ? 'active' : ''} onClick={() => setRightTab('pdf')}>
+              <span className="tab-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+                  <path d="M14 3v5h5" />
+                  <path d="M9 13h6M9 17h4" />
+                </svg>
+              </span>
+              PDF
+            </button>
             <button className={rightTab === 'errors' ? 'active' : ''} onClick={() => setRightTab('errors')}>
+              <span className="tab-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+                  <path d="M12 9v4M12 17h.01" />
+                </svg>
+              </span>
               Errors {result?.errors?.length ? `(${result.errors.length})` : ''}
             </button>
-            <button className={rightTab === 'ai' ? 'active' : ''} onClick={() => setRightTab('ai')}>AI</button>
+            <button className={rightTab === 'ai' ? 'active' : ''} onClick={() => setRightTab('ai')}>
+              <span className="tab-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 3v4M12 17v4M3 12h4M17 12h4" />
+                  <path d="M12 8.5 13.4 11 16 12l-2.6 1L12 15.5 10.6 13 8 12l2.6-1z" />
+                </svg>
+              </span>
+              AI
+            </button>
           </nav>
 
           <div className="tab-body">
@@ -270,6 +515,25 @@ export default function App() {
           </div>
         </aside>
       </main>
+
+      {preview && (
+        <ImagePreview
+          path={preview}
+          name={preview.split('/').pop()}
+          url={api.rawUrl(project.id, preview)}
+          onClose={() => setPreview(null)}
+          onInsert={insertImage}
+        />
+      )}
+
+      {showPicker && (
+        <ImagePicker
+          images={collectImages(tree)}
+          resolveUrl={(p) => api.rawUrl(project.id, p)}
+          onClose={() => setShowPicker(false)}
+          onInsert={insertImage}
+        />
+      )}
     </div>
   )
 }

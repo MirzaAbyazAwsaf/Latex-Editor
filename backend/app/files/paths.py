@@ -23,6 +23,10 @@ def build_dir(project_id: int) -> Path:
     return project_dir(project_id) / "build"
 
 
+def trash_dir(project_id: int) -> Path:
+    return project_dir(project_id) / "trash"
+
+
 def validate_relative_path(rel: str) -> str:
     if not rel or len(rel) > 255:
         raise PathValidationError("invalid path")

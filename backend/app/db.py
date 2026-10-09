@@ -31,6 +31,16 @@ CREATE TABLE IF NOT EXISTS compile_runs (
   duration_ms  INTEGER,
   created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS trash (
+  id            INTEGER PRIMARY KEY,
+  project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  original_path TEXT NOT NULL,
+  stored_name   TEXT NOT NULL,
+  kind          TEXT NOT NULL DEFAULT 'file',
+  size          INTEGER NOT NULL DEFAULT 0,
+  deleted_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 

@@ -1,20 +1,33 @@
 import json
+import re
+import shutil
+import time
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .ai.ollama_client import list_models, stream_chat
 from .compile.runner import run_compile
-from .config import DEFAULT_AI_MODEL, ENGINES, MAX_FILE_BYTES
+from .config import (
+    ASSET_EXTS,
+    DEFAULT_AI_MODEL,
+    ENGINES,
+    IMAGE_EXTS,
+    MAX_FILE_BYTES,
+    MAX_UPLOAD_BYTES,
+    MEDIA_TYPES,
+)
 from .db import connect, init_db
 from .files.paths import (
     PathValidationError,
     build_dir,
     resolve_in_src,
     src_dir,
+    trash_dir,
+    validate_relative_path,
 )
 
 app = FastAPI(title="Local LaTeX Editor")
@@ -58,10 +71,108 @@ class ProjectCreate(BaseModel):
 class ProjectPatch(BaseModel):
     name: str | None = None
     engine: str | None = None
+    main_file: str | None = None
 
 
 class FilePut(BaseModel):
     content: str
+
+
+class PathBody(BaseModel):
+    path: str = Field(min_length=1, max_length=255)
+
+
+class RenameBody(BaseModel):
+    from_path: str = Field(min_length=1, max_length=255)
+    to_path: str = Field(min_length=1, max_length=255)
+
+
+def build_tree(base: Path, rel: str = "") -> list[dict]:
+    current = base / rel if rel else base
+    if not current.exists():
+        return []
+    nodes: list[dict] = []
+    for entry in sorted(current.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
+        if entry.name.startswith("."):
+            continue
+        child_rel = f"{rel}/{entry.name}" if rel else entry.name
+        if entry.is_dir():
+            nodes.append(
+                {
+                    "name": entry.name,
+                    "path": child_rel,
+                    "kind": "folder",
+                    "children": build_tree(base, child_rel),
+                }
+            )
+        else:
+            nodes.append(
+                {
+                    "name": entry.name,
+                    "path": child_rel,
+                    "kind": "file",
+                    "size": entry.stat().st_size,
+                }
+            )
+    return nodes
+
+
+def _unique_trash_name(trash: Path, name: str) -> str:
+    base = f"{int(time.time() * 1000)}_{name}"
+    candidate = base
+    counter = 1
+    while (trash / candidate).exists():
+        candidate = f"{base}_{counter}"
+        counter += 1
+    return candidate
+
+
+def _reindex_path(con, project_id: int, target: Path, src: Path) -> None:
+    files = [target] if target.is_file() else [p for p in target.rglob("*") if p.is_file()]
+    for f in files:
+        rel = f.relative_to(src).as_posix()
+        con.execute(
+            """INSERT INTO files (project_id, path, kind, size)
+               VALUES (?,?,?,?)
+               ON CONFLICT(project_id, path)
+               DO UPDATE SET size=excluded.size, updated_at=CURRENT_TIMESTAMP""",
+            (project_id, rel, "tex" if rel.endswith(".tex") else "other", f.stat().st_size),
+        )
+
+
+def _safe_upload_name(name: str) -> str:
+    name = Path(name or "").name.strip()
+    cleaned = re.sub(r"[^A-Za-z0-9._ -]", "_", name).strip(". ")
+    return cleaned or "image"
+
+
+def _unique_in_src(target: Path) -> Path:
+    if not target.exists():
+        return target
+    stem, suffix = target.stem, target.suffix
+    counter = 1
+    while True:
+        candidate = target.with_name(f"{stem}-{counter}{suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+def _free_restore_path(project_id: int, original_path: str) -> Path:
+    src = src_dir(project_id)
+    try:
+        dst = resolve_in_src(project_id, original_path)
+    except PathValidationError:
+        dst = src / Path(original_path).name
+    if not dst.exists():
+        return dst
+    stem, suffix = dst.stem, dst.suffix
+    counter = 1
+    while True:
+        candidate = dst.with_name(f"{stem} (restored {counter}){suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
 
 
 class AiRequest(BaseModel):
@@ -123,6 +234,13 @@ def patch_project(project_id: int, body: ProjectPatch):
             raise HTTPException(400, f"unknown engine: {body.engine}")
         sets.append("engine=?")
         vals.append(body.engine)
+    if body.main_file is not None:
+        try:
+            resolve_in_src(project_id, body.main_file)
+        except PathValidationError as e:
+            raise HTTPException(400, str(e))
+        sets.append("main_file=?")
+        vals.append(body.main_file)
     if not sets:
         raise HTTPException(400, "nothing to update")
     vals.append(project_id)
@@ -143,7 +261,6 @@ def delete_project(project_id: int):
         cur = con.execute("DELETE FROM projects WHERE id=?", (project_id,))
         if cur.rowcount == 0:
             raise HTTPException(404, "project not found")
-    import shutil
 
     pdir = src_dir(project_id).parent
     if pdir.exists():
@@ -200,6 +317,254 @@ def write_file(project_id: int, body: FilePut, path: str = "main.tex"):
             "UPDATE projects SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (project_id,)
         )
     return {"ok": True, "size": size}
+
+
+@app.get("/api/projects/{project_id}/tree")
+def get_tree(project_id: int):
+    return build_tree(src_dir(project_id))
+
+
+@app.post("/api/projects/{project_id}/upload")
+async def upload_asset(project_id: int, file: UploadFile = File(...), dir: str = Form("")):
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in IMAGE_EXTS:
+        raise HTTPException(400, f"unsupported image type: {ext or 'unknown'}")
+
+    folder = (dir or "").replace("\\", "/").strip("/")
+    name = _safe_upload_name(file.filename)
+    rel = f"{folder}/{name}" if folder else name
+    try:
+        target = _unique_in_src(resolve_in_src(project_id, rel))
+    except PathValidationError as e:
+        raise HTTPException(400, str(e))
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.parent / (target.name + ".part")
+    size = 0
+    try:
+        with tmp.open("wb") as fh:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(413, "file too large")
+                fh.write(chunk)
+    except HTTPException:
+        tmp.unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
+    tmp.replace(target)
+
+    src = src_dir(project_id).resolve()
+    relpath = target.relative_to(src).as_posix()
+    with connect() as con:
+        con.execute(
+            """INSERT INTO files (project_id, path, kind, size)
+               VALUES (?,?,?,?)
+               ON CONFLICT(project_id, path)
+               DO UPDATE SET size=excluded.size, updated_at=CURRENT_TIMESTAMP""",
+            (project_id, relpath, "image", size),
+        )
+        con.execute("UPDATE projects SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (project_id,))
+    return {"ok": True, "path": relpath, "size": size}
+
+
+@app.get("/api/projects/{project_id}/raw")
+def raw_asset(project_id: int, path: str):
+    try:
+        target = resolve_in_src(project_id, path)
+    except PathValidationError as e:
+        raise HTTPException(400, str(e))
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, "not found")
+    ext = target.suffix.lower()
+    if ext not in ASSET_EXTS:
+        raise HTTPException(415, "not a viewable asset")
+    return FileResponse(target, media_type=MEDIA_TYPES.get(ext, "application/octet-stream"))
+
+
+@app.post("/api/projects/{project_id}/files")
+def create_file(project_id: int, body: PathBody):
+    try:
+        target = resolve_in_src(project_id, body.path)
+    except PathValidationError as e:
+        raise HTTPException(400, str(e))
+    if target.exists():
+        raise HTTPException(409, "already exists")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    content = DEFAULT_TEX if body.path.endswith(".tex") else ""
+    target.write_text(content, encoding="utf-8")
+    size = len(content.encode("utf-8"))
+    with connect() as con:
+        con.execute(
+            """INSERT INTO files (project_id, path, kind, size)
+               VALUES (?,?,?,?)
+               ON CONFLICT(project_id, path)
+               DO UPDATE SET size=excluded.size, updated_at=CURRENT_TIMESTAMP""",
+            (project_id, body.path, "tex" if body.path.endswith(".tex") else "other", size),
+        )
+        con.execute(
+            "UPDATE projects SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (project_id,)
+        )
+    return {"ok": True, "path": body.path}
+
+
+@app.post("/api/projects/{project_id}/folders")
+def create_folder(project_id: int, body: PathBody):
+    try:
+        target = resolve_in_src(project_id, body.path)
+    except PathValidationError as e:
+        raise HTTPException(400, str(e))
+    if target.exists():
+        raise HTTPException(409, "already exists")
+    target.mkdir(parents=True, exist_ok=True)
+    return {"ok": True, "path": body.path}
+
+
+@app.patch("/api/projects/{project_id}/files")
+def rename_entry(project_id: int, body: RenameBody):
+    try:
+        src = resolve_in_src(project_id, body.from_path)
+        dst = resolve_in_src(project_id, body.to_path)
+    except PathValidationError as e:
+        raise HTTPException(400, str(e))
+    if not src.exists():
+        raise HTTPException(404, "not found")
+    if dst.exists():
+        raise HTTPException(409, "target already exists")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    src.rename(dst)
+    prefix = body.from_path + "/"
+    with connect() as con:
+        rows = con.execute(
+            "SELECT id, path FROM files WHERE project_id=?", (project_id,)
+        ).fetchall()
+        for row in rows:
+            p = row["path"]
+            if p == body.from_path:
+                newp = body.to_path
+            elif p.startswith(prefix):
+                newp = body.to_path + p[len(body.from_path):]
+            else:
+                continue
+            con.execute("UPDATE files SET path=? WHERE id=?", (newp, row["id"]))
+        con.execute(
+            "UPDATE projects SET main_file=? WHERE id=? AND main_file=?",
+            (body.to_path, project_id, body.from_path),
+        )
+        con.execute(
+            "UPDATE projects SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (project_id,)
+        )
+    return {"ok": True, "path": body.to_path}
+
+
+@app.delete("/api/projects/{project_id}/files")
+def delete_entry(project_id: int, path: str):
+    try:
+        target = resolve_in_src(project_id, path)
+    except PathValidationError as e:
+        raise HTTPException(400, str(e))
+    if not target.exists():
+        raise HTTPException(404, "not found")
+
+    trash = trash_dir(project_id)
+    trash.mkdir(parents=True, exist_ok=True)
+    stored_name = _unique_trash_name(trash, target.name)
+    shutil.move(str(target), str(trash / stored_name))
+
+    is_folder = (trash / stored_name).is_dir()
+    kind = "folder" if is_folder else "file"
+    size = 0 if is_folder else (trash / stored_name).stat().st_size
+    prefix = path + "/"
+    with connect() as con:
+        con.execute(
+            "DELETE FROM files WHERE project_id=? AND (path=? OR path LIKE ?)",
+            (project_id, path, prefix),
+        )
+        con.execute(
+            "INSERT INTO trash (project_id, original_path, stored_name, kind, size) VALUES (?,?,?,?,?)",
+            (project_id, path, stored_name, kind, size),
+        )
+        proj = con.execute("SELECT main_file FROM projects WHERE id=?", (project_id,)).fetchone()
+        if proj and (proj["main_file"] == path or proj["main_file"].startswith(prefix)):
+            nxt = con.execute(
+                "SELECT path FROM files WHERE project_id=? AND path LIKE '%.tex' ORDER BY path LIMIT 1",
+                (project_id,),
+            ).fetchone()
+            con.execute(
+                "UPDATE projects SET main_file=? WHERE id=?",
+                (nxt["path"] if nxt else "main.tex", project_id),
+            )
+        con.execute("UPDATE projects SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (project_id,))
+    return {"ok": True}
+
+
+# ---------- recycle bin ----------
+
+@app.get("/api/projects/{project_id}/trash")
+def list_trash(project_id: int):
+    with connect() as con:
+        rows = con.execute(
+            "SELECT id, original_path, kind, size, deleted_at FROM trash WHERE project_id=? ORDER BY deleted_at DESC, id DESC",
+            (project_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+@app.post("/api/projects/{project_id}/trash/{trash_id}/restore")
+def restore_trash(project_id: int, trash_id: int):
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM trash WHERE id=? AND project_id=?", (trash_id, project_id)
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "trash item not found")
+
+    stored = trash_dir(project_id) / row["stored_name"]
+    if not stored.exists():
+        raise HTTPException(410, "backing files are missing")
+
+    dst = _free_restore_path(project_id, row["original_path"])
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(stored), str(dst))
+
+    src = src_dir(project_id).resolve()
+    with connect() as con:
+        _reindex_path(con, project_id, dst, src)
+        con.execute("DELETE FROM trash WHERE id=?", (trash_id,))
+        con.execute("UPDATE projects SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (project_id,))
+    return {"ok": True, "path": dst.relative_to(src).as_posix()}
+
+
+@app.delete("/api/projects/{project_id}/trash/{trash_id}")
+def purge_trash(project_id: int, trash_id: int):
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM trash WHERE id=? AND project_id=?", (trash_id, project_id)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "trash item not found")
+        con.execute("DELETE FROM trash WHERE id=?", (trash_id,))
+
+    stored = trash_dir(project_id) / row["stored_name"]
+    if stored.is_dir():
+        shutil.rmtree(stored, ignore_errors=True)
+    elif stored.exists():
+        stored.unlink()
+    return {"ok": True}
+
+
+@app.post("/api/projects/{project_id}/trash/empty")
+def empty_trash(project_id: int):
+    with connect() as con:
+        con.execute("DELETE FROM trash WHERE project_id=?", (project_id,))
+    tdir = trash_dir(project_id)
+    if tdir.exists():
+        shutil.rmtree(tdir, ignore_errors=True)
+    return {"ok": True}
 
 
 # ---------- compile ----------

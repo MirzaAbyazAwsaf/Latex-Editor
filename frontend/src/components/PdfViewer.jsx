@@ -14,7 +14,16 @@ export default function PdfViewer({ pdfUrl }) {
   const taskRef = useRef(null)
 
   useEffect(() => {
-    if (!pdfUrl || !canvasRef.current) return
+    if (!pdfUrl) {
+      setStatus('idle')
+      setTotal(0)
+      const canvas = canvasRef.current
+      if (canvas) {
+        canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height)
+      }
+      return
+    }
+    if (!canvasRef.current) return
     let cancelled = false
 
     const scrollEl = wrapRef.current

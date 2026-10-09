@@ -42,6 +42,12 @@ def run_compile(project_id: int, engine: str, main_file: str) -> CompileOutcome:
     out = build_dir(project_id)
     out.mkdir(parents=True, exist_ok=True)
 
+    for stale in out.glob("*.pdf"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
     stem = Path(main_file).stem
     cmd = [
         _engine_path(engine),
@@ -79,7 +85,7 @@ def run_compile(project_id: int, engine: str, main_file: str) -> CompileOutcome:
 
     duration_ms = int((time.monotonic() - start) * 1000)
     pdf_path = out / f"{stem}.pdf"
-    pdf_exists = pdf_path.exists() and pdf_path.stat().st_size > 0
+    pdf_exists = returncode == 0 and pdf_path.exists() and pdf_path.stat().st_size > 0
 
     if timed_out:
         status = "timeout"

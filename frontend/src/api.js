@@ -27,6 +27,40 @@ export const api = {
       headers: JSON_HEADERS,
       body: JSON.stringify({ content }),
     }),
+  getTree: (id) => req(`/api/projects/${id}/tree`),
+  uploadFile: (id, file, dir = '') => {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('dir', dir)
+    return req(`/api/projects/${id}/upload`, { method: 'POST', body: fd })
+  },
+  rawUrl: (id, path) => `/api/projects/${id}/raw?path=${encodeURIComponent(path)}`,
+  createFile: (id, path) =>
+    req(`/api/projects/${id}/files`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ path }),
+    }),
+  createFolder: (id, path) =>
+    req(`/api/projects/${id}/folders`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ path }),
+    }),
+  renameEntry: (id, fromPath, toPath) =>
+    req(`/api/projects/${id}/files`, {
+      method: 'PATCH',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ from_path: fromPath, to_path: toPath }),
+    }),
+  deleteEntry: (id, path) =>
+    req(`/api/projects/${id}/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
+  listTrash: (id) => req(`/api/projects/${id}/trash`),
+  restoreTrash: (id, trashId) =>
+    req(`/api/projects/${id}/trash/${trashId}/restore`, { method: 'POST' }),
+  purgeTrash: (id, trashId) =>
+    req(`/api/projects/${id}/trash/${trashId}`, { method: 'DELETE' }),
+  emptyTrash: (id) => req(`/api/projects/${id}/trash/empty`, { method: 'POST' }),
   compile: (id) => req(`/api/projects/${id}/compile`, { method: 'POST' }),
   aiModels: () => req('/api/ai/models'),
 }

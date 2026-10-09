@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { EditorState, Compartment } from '@codemirror/state'
+import { EditorState } from '@codemirror/state'
 import {
   EditorView,
   keymap,
@@ -14,44 +14,106 @@ import {
   closeBrackets,
   closeBracketsKeymap,
   completionKeymap,
+  startCompletion,
 } from '@codemirror/autocomplete'
-import { bracketMatching, indentOnInput, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
+import { bracketMatching, indentOnInput, syntaxHighlighting, HighlightStyle } from '@codemirror/language'
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
 import { StreamLanguage } from '@codemirror/language'
 import { stex } from '@codemirror/legacy-modes/mode/stex'
+import { tags as tg } from '@lezer/highlight'
 import { SLASH_COMMANDS } from '../slashCommands'
 
+const EDITOR_BG = '#1b222c'
+const EDITOR_FG = '#e6edf3'
+
+const latexTheme = EditorView.theme(
+  {
+    '&': {
+      height: '100%',
+      fontSize: '14px',
+      backgroundColor: EDITOR_BG,
+      color: EDITOR_FG,
+    },
+    '.cm-scroller': { fontFamily: "'Cascadia Code', Consolas, monospace" },
+    '.cm-content': {
+      paddingBottom: '40vh',
+      caretColor: EDITOR_FG,
+    },
+    '.cm-cursor, .cm-dropCursor': { borderLeftColor: EDITOR_FG },
+    '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {
+      backgroundColor: '#2e4a66',
+    },
+    '.cm-selectionMatch': { backgroundColor: '#7aa2f740' },
+    '.cm-matchingBracket, &.cm-focused .cm-matchingBracket': {
+      backgroundColor: '#7aa2f740',
+      outline: '1px solid #7aa2f7',
+    },
+  },
+  { dark: true },
+)
+
+const latexHighlight = HighlightStyle.define([
+  { tag: tg.keyword, color: '#c792ea' },
+  { tag: tg.controlKeyword, color: '#c792ea' },
+  { tag: tg.comment, color: '#7c8b9a', fontStyle: 'italic' },
+  { tag: tg.lineComment, color: '#7c8b9a', fontStyle: 'italic' },
+  { tag: tg.blockComment, color: '#7c8b9a', fontStyle: 'italic' },
+  { tag: tg.string, color: '#c3e88d' },
+  { tag: tg.special(tg.string), color: '#f78c6c' },
+  { tag: tg.number, color: '#f78c6c' },
+  { tag: tg.bool, color: '#f78c6c' },
+  { tag: tg.operator, color: '#89ddff' },
+  { tag: tg.bracket, color: '#89ddff' },
+  { tag: tg.squareBracket, color: '#89ddff' },
+  { tag: tg.brace, color: '#89ddff' },
+  { tag: tg.tagName, color: '#82aaff' },
+  { tag: tg.typeName, color: '#ffcb6b' },
+  { tag: tg.attributeName, color: '#ffcb6b' },
+  { tag: tg.meta, color: '#ffcb6b' },
+  { tag: tg.variableName, color: EDITOR_FG },
+  { tag: tg.definition(tg.variableName), color: '#82aaff' },
+])
+
 function slashCompletionSource(context) {
-  const word = context.matchBefore(/\/\w*/)
+  const word = context.matchBefore(/\/[\w-]*/)
   if (!word || (word.from === word.to && !context.explicit)) return null
-  return {
-    from: word.from,
-    options: SLASH_COMMANDS.map((cmd) => ({
-      label: cmd.label,
-      detail: cmd.detail,
-      type: 'keyword',
-      apply: (view, completion, from, to) => {
-        if (cmd.aiAction) {
-          view.dispatch({ changes: { from, to, insert: '' } })
-          handlers.current.onAiAction?.(cmd.aiAction)
-          return
-        }
-        const text = cmd.insert.replace('${}', '')
-        const cursorOffset = cmd.insert.indexOf('${}')
-        view.dispatch({
-          changes: { from, to, insert: text },
-          selection: { anchor: from + (cursorOffset === -1 ? text.length : cursorOffset) },
-        })
-      },
-    })),
-  }
+  const query = word.text.slice(1).toLowerCase()
+  const options = SLASH_COMMANDS.filter((cmd) => {
+    if (!query) return true
+    if (cmd.label.slice(1).toLowerCase().includes(query)) return true
+    return (cmd.keywords || []).some((k) => k.toLowerCase().includes(query))
+  }).map((cmd) => ({
+    label: cmd.label,
+    detail: cmd.detail,
+    type: cmd.type || 'keyword',
+    boost: cmd.boost || 0,
+    apply: (view, completion, from, to) => {
+      if (cmd.pickImage) {
+        view.dispatch({ changes: { from, to, insert: '' } })
+        handlers.current.onInsertImage?.()
+        return
+      }
+      if (cmd.aiAction) {
+        view.dispatch({ changes: { from, to, insert: '' } })
+        handlers.current.onAiAction?.(cmd.aiAction)
+        return
+      }
+      const text = cmd.insert.replace('${}', '')
+      const cursorOffset = cmd.insert.indexOf('${}')
+      view.dispatch({
+        changes: { from, to, insert: text },
+        selection: { anchor: from + (cursorOffset === -1 ? text.length : cursorOffset) },
+      })
+    },
+  }))
+  return { from: word.from, options }
 }
 
-export default function Editor({ doc, onChange, onSave, onCompile, onAiAction, onReady }) {
+export default function Editor({ doc, onChange, onSave, onCompile, onAiAction, onInsertImage, onReady }) {
   const containerRef = useRef(null)
   const viewRef = useRef(null)
-  const handlers = useRef({ onChange, onSave, onCompile, onAiAction })
-  handlers.current = { onChange, onSave, onCompile, onAiAction }
+  const handlers = useRef({ onChange, onSave, onCompile, onAiAction, onInsertImage })
+  handlers.current = { onChange, onSave, onCompile, onAiAction, onInsertImage }
   const loadedRef = useRef(null)
 
   useEffect(() => {
@@ -67,13 +129,14 @@ export default function Editor({ doc, onChange, onSave, onCompile, onAiAction, o
         lineNumbers(),
         highlightActiveLineGutter(),
         highlightActiveLine(),
+        EditorView.lineWrapping,
         history(),
         drawSelection(),
         indentOnInput(),
         bracketMatching(),
         closeBrackets(),
         highlightSelectionMatches(),
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+        syntaxHighlighting(latexHighlight),
         StreamLanguage.define(stex),
         completion,
         keymap.of([
@@ -94,13 +157,9 @@ export default function Editor({ doc, onChange, onSave, onCompile, onAiAction, o
           {
             key: '/',
             run: (view) => {
-              const r = EditorView.autocomplete(view)
-              if (!r) {
-                view.dispatch(view.state.replaceSelection('/'))
-                EditorView.autocomplete(view)
-                return true
-              }
-              return false
+              view.dispatch(view.state.replaceSelection('/'))
+              startCompletion(view)
+              return true
             },
           },
           ...closeBracketsKeymap,
@@ -115,11 +174,7 @@ export default function Editor({ doc, onChange, onSave, onCompile, onAiAction, o
             handlers.current.onChange(update.state.doc.toString())
           }
         }),
-        EditorView.theme({
-          '&': { height: '100%', fontSize: '14px' },
-          '.cm-scroller': { fontFamily: "'Cascadia Code', Consolas, monospace" },
-          '.cm-content': { paddingBottom: '40vh' },
-        }),
+        latexTheme,
       ],
     })
 
