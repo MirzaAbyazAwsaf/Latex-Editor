@@ -19,6 +19,7 @@ export const api = {
     req('/api/projects', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ name }) }),
   patchProject: (id, body) =>
     req(`/api/projects/${id}`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body) }),
+  deleteProject: (id) => req(`/api/projects/${id}`, { method: 'DELETE' }),
   readFile: (id, path = 'main.tex') =>
     req(`/api/projects/${id}/files/content?path=${encodeURIComponent(path)}`),
   writeFile: (id, content, path = 'main.tex') =>
@@ -35,6 +36,8 @@ export const api = {
     return req(`/api/projects/${id}/upload`, { method: 'POST', body: fd })
   },
   rawUrl: (id, path) => `/api/projects/${id}/raw?path=${encodeURIComponent(path)}`,
+  pdfUrl: (id, t = Date.now()) => `/api/projects/${id}/pdf?t=${t}`,
+  exportUrl: (id) => `/api/projects/${id}/export.zip`,
   createFile: (id, path) =>
     req(`/api/projects/${id}/files`, {
       method: 'POST',

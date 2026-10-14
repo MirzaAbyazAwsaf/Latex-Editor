@@ -19,6 +19,16 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".bmp", ".webp"}
 ASSET_EXTS = IMAGE_EXTS | {".pdf", ".eps"}
+UPLOAD_EXTS = ASSET_EXTS | {
+    ".tex",
+    ".bib",
+    ".sty",
+    ".cls",
+    ".txt",
+    ".csv",
+    ".md",
+    ".json",
+}
 
 MEDIA_TYPES = {
     ".png": "image/png",

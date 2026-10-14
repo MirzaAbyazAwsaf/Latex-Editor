@@ -1,7 +1,9 @@
+import io
 import json
 import re
 import shutil
 import time
+import zipfile
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -19,6 +21,7 @@ from .config import (
     MAX_FILE_BYTES,
     MAX_UPLOAD_BYTES,
     MEDIA_TYPES,
+    UPLOAD_EXTS,
 )
 from .db import connect, init_db
 from .files.paths import (
@@ -327,8 +330,8 @@ def get_tree(project_id: int):
 @app.post("/api/projects/{project_id}/upload")
 async def upload_asset(project_id: int, file: UploadFile = File(...), dir: str = Form("")):
     ext = Path(file.filename or "").suffix.lower()
-    if ext not in IMAGE_EXTS:
-        raise HTTPException(400, f"unsupported image type: {ext or 'unknown'}")
+    if ext not in UPLOAD_EXTS:
+        raise HTTPException(400, f"unsupported file type: {ext or 'unknown'}")
 
     folder = (dir or "").replace("\\", "/").strip("/")
     name = _safe_upload_name(file.filename)
@@ -360,13 +363,21 @@ async def upload_asset(project_id: int, file: UploadFile = File(...), dir: str =
 
     src = src_dir(project_id).resolve()
     relpath = target.relative_to(src).as_posix()
+    if ext in IMAGE_EXTS:
+        kind = "image"
+    elif ext == ".tex":
+        kind = "tex"
+    elif ext == ".bib":
+        kind = "bib"
+    else:
+        kind = "other"
     with connect() as con:
         con.execute(
             """INSERT INTO files (project_id, path, kind, size)
                VALUES (?,?,?,?)
                ON CONFLICT(project_id, path)
                DO UPDATE SET size=excluded.size, updated_at=CURRENT_TIMESTAMP""",
-            (project_id, relpath, "image", size),
+            (project_id, relpath, kind, size),
         )
         con.execute("UPDATE projects SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (project_id,))
     return {"ok": True, "path": relpath, "size": size}
@@ -395,7 +406,7 @@ def create_file(project_id: int, body: PathBody):
     if target.exists():
         raise HTTPException(409, "already exists")
     target.parent.mkdir(parents=True, exist_ok=True)
-    content = DEFAULT_TEX if body.path.endswith(".tex") else ""
+    content = ""
     target.write_text(content, encoding="utf-8")
     size = len(content.encode("utf-8"))
     with connect() as con:
@@ -606,6 +617,28 @@ def get_log(project_id: int):
     if not logs:
         raise HTTPException(404, "no log yet")
     return {"log": logs[-1].read_text(encoding="utf-8", errors="replace")}
+
+
+@app.get("/api/projects/{project_id}/export.zip")
+def export_zip(project_id: int):
+    with connect() as con:
+        proj = con.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+    if not proj:
+        raise HTTPException(404, "project not found")
+    src = src_dir(project_id)
+    if not src.exists():
+        raise HTTPException(404, "nothing to export")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in sorted(src.rglob("*")):
+            if f.is_file():
+                zf.write(f, f.relative_to(src).as_posix())
+    buf.seek(0)
+
+    name = re.sub(r"[^A-Za-z0-9._ -]", "_", proj["name"]).strip() or "project"
+    headers = {"Content-Disposition": f'attachment; filename="{name}.zip"'}
+    return StreamingResponse(buf, media_type="application/zip", headers=headers)
 
 
 # ---------- ai ----------

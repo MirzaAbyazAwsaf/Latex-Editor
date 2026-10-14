@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { undo, redo, selectAll } from '@codemirror/commands'
 import { api } from './api'
 import Editor from './components/Editor'
 import FileTree from './components/FileTree'
@@ -6,6 +7,12 @@ import PdfViewer from './components/PdfViewer'
 import ErrorPanel from './components/ErrorPanel'
 import AiTerminal from './components/AiTerminal'
 import { ImagePicker, ImagePreview } from './components/ImageModal'
+import TrashPanel from './components/TrashPanel'
+import Outline from './components/Outline'
+import MenuBar from './components/MenuBar'
+import NavStrip from './components/NavStrip'
+import EditorTabBar from './components/EditorTabBar'
+import SelectionToolbar from './components/SelectionToolbar'
 import './App.css'
 
 const ENGINES = ['pdflatex', 'xelatex', 'lualatex']
@@ -21,6 +28,10 @@ function collectImages(nodes, acc = []) {
   }
   return acc
 }
+
+const FIGURE_TPL = '\\begin{figure}[htbp]\n\\centering\n\\includegraphics[width=0.8\\linewidth]{${}}\n\\caption{}\n\\label{}\n\\end{figure}'
+const TABLE_TPL = '\\begin{table}[htbp]\n\\centering\n\\begin{tabular}{${ll}}\n & \\\\\n\\end{tabular}\n\\caption{}\n\\label{}\n\\end{table}'
+const EQUATION_TPL = '\\begin{equation}\n${}\n\\end{equation}'
 
 const clamp = (v, min, max) => Math.min(Math.max(v, min), max)
 
@@ -45,6 +56,10 @@ export default function App() {
   const [engine, setEngine] = useState('pdflatex')
   const [preview, setPreview] = useState(null)
   const [showPicker, setShowPicker] = useState(false)
+  const [showTrash, setShowTrash] = useState(false)
+  const [filesOpen, setFilesOpen] = useState(true)
+  const [outlineOpen, setOutlineOpen] = useState(true)
+  const [selection, setSelection] = useState('')
   const [sidebarW, setSidebarW] = useState(() => loadWidth('sidebarW', 240))
   const [rightW, setRightW] = useState(() =>
     loadWidth('rightW', Math.min(720, Math.round(window.innerWidth * 0.42))),
@@ -254,6 +269,21 @@ export default function App() {
     [project],
   )
 
+  const renameProject = async () => {
+    if (!project) return
+    const name = window.prompt('Project name:', project.name)
+    if (!name || name === project.name) return
+    const p = await api.patchProject(project.id, { name })
+    setProject(p)
+  }
+
+  const deleteProject = async () => {
+    if (!project) return
+    if (!window.confirm(`Delete project "${project.name}"? This cannot be undone.`)) return
+    await api.deleteProject(project.id)
+    window.location.reload()
+  }
+
   // ---------- pane resize ----------
   const onDragStart = (which) => (e) => {
     e.preventDefault()
@@ -366,6 +396,76 @@ export default function App() {
     saveTimerRef.current = setTimeout(() => saveNow(), 200)
   }
 
+  // ---------- editor commands (toolbar / menus) ----------
+  const markDirty = useCallback(() => {
+    setSaveState('dirty')
+    clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(() => saveNow(), AUTOSAVE_MS)
+  }, [saveNow])
+
+  const runEditor = useCallback((fn) => {
+    const view = editorViewRef.current
+    if (!view) return
+    fn(view)
+    view.focus()
+  }, [])
+
+  const insertTemplate = useCallback(
+    (tpl) => {
+      const view = editorViewRef.current
+      if (!view) return
+      const sel = view.state.selection.main
+      const m = tpl.match(/\$\{([^}]*)\}/)
+      let text = tpl
+      let selFrom = tpl.length
+      let selTo = tpl.length
+      if (m) {
+        const before = tpl.slice(0, m.index)
+        const after = tpl.slice(m.index + m[0].length)
+        text = before + m[1] + after
+        selFrom = before.length
+        selTo = before.length + m[1].length
+      }
+      view.dispatch({
+        changes: { from: sel.from, to: sel.to, insert: text },
+        selection: { anchor: sel.from + selFrom, head: sel.from + selTo },
+      })
+      view.focus()
+      markDirty()
+    },
+    [markDirty],
+  )
+
+  const wrapSelection = useCallback(
+    (before, after = before) => {
+      const view = editorViewRef.current
+      if (!view) return
+      const sel = view.state.selection.main
+      const text = view.state.sliceDoc(sel.from, sel.to)
+      const insert = before + text + after
+      view.dispatch({
+        changes: { from: sel.from, to: sel.to, insert },
+        selection: { anchor: sel.from + before.length, head: sel.from + before.length + text.length },
+      })
+      view.focus()
+      markDirty()
+    },
+    [markDirty],
+  )
+
+  const onSelectionAction = (kind) => {
+    const text = selection
+    if (!text) return
+    setRightTab('ai')
+    const prompts = {
+      rewrite: 'Rewrite the following LaTeX to improve clarity while keeping the meaning:',
+      shorten: 'Shorten the following LaTeX while keeping its meaning:',
+      grammar: 'Fix grammar and spelling in the following LaTeX text:',
+      explain: 'Explain what the following LaTeX does:',
+    }
+    setAiPrefill(`${prompts[kind]}\n${text}`)
+  }
+
   // ---------- engine ----------
   const changeEngine = async (eng) => {
     setEngine(eng)
@@ -400,57 +500,157 @@ export default function App() {
     timeout: 'badge err',
   }
 
+  const menus = [
+    {
+      label: 'File',
+      items: [
+        { label: 'Rename project…', onClick: renameProject },
+        { label: 'Download PDF', onClick: () => window.open(api.pdfUrl(project.id), '_blank') },
+        { label: 'Download project (.zip)', onClick: () => window.open(api.exportUrl(project.id), '_blank') },
+        { sep: true },
+        { label: 'Delete project', onClick: deleteProject },
+      ],
+    },
+    {
+      label: 'Edit',
+      items: [
+        { label: 'Undo', hint: 'Ctrl+Z', onClick: () => runEditor(undo) },
+        { label: 'Redo', hint: 'Ctrl+Y', onClick: () => runEditor(redo) },
+        { sep: true },
+        { label: 'Select all', hint: 'Ctrl+A', onClick: () => runEditor(selectAll) },
+      ],
+    },
+    {
+      label: 'Insert',
+      items: [
+        { label: 'Image…', onClick: () => setShowPicker(true) },
+        { label: 'Figure', onClick: () => insertTemplate(FIGURE_TPL) },
+        { label: 'Table', onClick: () => insertTemplate(TABLE_TPL) },
+        { label: 'Equation', onClick: () => insertTemplate(EQUATION_TPL) },
+        { sep: true },
+        { label: 'Citation', onClick: () => insertTemplate('\\cite{${}}') },
+        { label: 'Reference', onClick: () => insertTemplate('\\ref{${}}') },
+        { label: 'Label', onClick: () => insertTemplate('\\label{${}}') },
+      ],
+    },
+    {
+      label: 'View',
+      items: [
+        { label: (filesOpen ? 'Hide' : 'Show') + ' files', onClick: () => setFilesOpen((v) => !v) },
+        { label: (outlineOpen ? 'Hide' : 'Show') + ' outline', onClick: () => setOutlineOpen((v) => !v) },
+        { sep: true },
+        { label: 'Show PDF', onClick: () => setRightTab('pdf') },
+        { label: 'Show errors', onClick: () => setRightTab('errors') },
+        { label: 'Show AI assistant', onClick: () => setRightTab('ai') },
+      ],
+    },
+    {
+      label: 'Format',
+      items: [
+        { label: 'Bold', hint: 'Ctrl+B', onClick: () => wrapSelection('\\textbf{', '}') },
+        { label: 'Italic', onClick: () => wrapSelection('\\textit{', '}') },
+        { label: 'Underline', onClick: () => wrapSelection('\\underline{', '}') },
+        { label: 'Code', onClick: () => wrapSelection('\\texttt{', '}') },
+        { sep: true },
+        { label: 'Section', onClick: () => insertTemplate('\\section{${}}') },
+        { label: 'Itemize', onClick: () => insertTemplate('\\begin{itemize}\n\\item ${}\n\\end{itemize}') },
+      ],
+    },
+    {
+      label: 'Help',
+      items: [
+        {
+          label: 'Keyboard shortcuts',
+          onClick: () => window.alert('Ctrl+S save · Ctrl+Enter compile · / slash menu · Ctrl+Z undo'),
+        },
+        { label: 'About', onClick: () => window.alert('Local LaTeX Editor — a self-hosted, Overleaf-style editor.') },
+      ],
+    },
+  ]
+
   return (
     <div className="app">
-      <header className="toolbar">
-        <span className="logo">⟨LaTeX⟩</span>
-        <span className="proj-name">{project.name}</span>
+      <MenuBar title={project.name} onRenameTitle={renameProject} menus={menus}>
+        <span className={`save-ind ${saveState}`}>
+          {saveState === 'saved' && 'Saved ✓'}
+          {saveState === 'saving' && 'Saving…'}
+          {saveState === 'dirty' && 'Unsaved'}
+          {saveState === 'error' && 'Save failed!'}
+        </span>
 
-        <div className="toolbar-right">
-          <span className={`save-ind ${saveState}`}>
-            {saveState === 'saved' && 'Saved ✓'}
-            {saveState === 'saving' && 'Saving…'}
-            {saveState === 'dirty' && 'Unsaved'}
-            {saveState === 'error' && 'Save failed!'}
+        <select value={engine} onChange={(e) => changeEngine(e.target.value)} className="engine-select">
+          {ENGINES.map((en) => (
+            <option key={en} value={en}>{en}</option>
+          ))}
+        </select>
+
+        <button className="btn primary compile-btn" onClick={doCompile} disabled={compile.running}>
+          {compile.running ? `Compiling… ${(compile.elapsed / 1000).toFixed(1)}s` : '▶ Compile'}
+        </button>
+
+        <a className="btn" href={api.exportUrl(project.id)} title="Download project as ZIP">⭳ ZIP</a>
+
+        <button className="icon-btn" title="AI assistant" onClick={() => setRightTab('ai')}>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 3v4M12 17v4M3 12h4M17 12h4" />
+            <path d="M12 8.5 13.4 11 16 12l-2.6 1L12 15.5 10.6 13 8 12l2.6-1z" />
+          </svg>
+        </button>
+
+        {result && (
+          <span className={statusBadge[result.status] || 'badge'}>
+            {result.status === 'ok' ? `OK ${result.duration_ms}ms` : result.status.toUpperCase()}
           </span>
-
-          <select value={engine} onChange={(e) => changeEngine(e.target.value)} className="engine-select">
-            {ENGINES.map((en) => (
-              <option key={en} value={en}>{en}</option>
-            ))}
-          </select>
-
-          <button className="btn primary compile-btn" onClick={doCompile} disabled={compile.running}>
-            {compile.running ? `Compiling… ${(compile.elapsed / 1000).toFixed(1)}s` : '▶ Compile'}
-          </button>
-
-          {result && (
-            <span className={statusBadge[result.status] || 'badge'}>
-              {result.status === 'ok' ? `OK ${result.duration_ms}ms` : result.status.toUpperCase()}
-            </span>
-          )}
-        </div>
-      </header>
+        )}
+      </MenuBar>
 
       <main className="workspace">
-        <aside className="sidebar" style={{ flex: `0 0 ${sidebarW}px` }}>
-          <FileTree
-            tree={tree}
-            activePath={activePath}
-            mainFile={project.main_file}
-            onOpen={openFile}
-            onCreateFile={createFile}
-            onCreateFolder={createFolder}
-            onRename={renameEntry}
-            onDelete={deleteEntry}
-            onSetMain={setMainFile}
-            onUpload={uploadImage}
-          />
-        </aside>
+        <NavStrip
+          filesOpen={filesOpen}
+          outlineOpen={outlineOpen}
+          onToggleFiles={() => setFilesOpen((v) => !v)}
+          onToggleOutline={() => setOutlineOpen((v) => !v)}
+          onHistory={() => window.alert('Version history is not available yet.')}
+          onShare={() => window.alert('Sharing is not available yet.')}
+          onSettings={() => setRightTab('ai')}
+        />
 
-        <div className="resizer" onMouseDown={onDragStart('sidebar')} />
+        {(filesOpen || outlineOpen) && (
+          <>
+            <aside className="sidebar" style={{ flex: `0 0 ${sidebarW}px` }}>
+              {filesOpen && (
+                <FileTree
+                  tree={tree}
+                  activePath={activePath}
+                  mainFile={project.main_file}
+                  onOpen={openFile}
+                  onCreateFile={createFile}
+                  onCreateFolder={createFolder}
+                  onRename={renameEntry}
+                  onDelete={deleteEntry}
+                  onSetMain={setMainFile}
+                  onUpload={uploadImage}
+                  onOpenTrash={() => setShowTrash(true)}
+                />
+              )}
+              {outlineOpen && <Outline doc={doc} onJump={jumpToLine} />}
+            </aside>
+
+            <div className="resizer" onMouseDown={onDragStart('sidebar')} />
+          </>
+        )}
 
         <section className="editor-pane">
+          <EditorTabBar
+            path={activePath}
+            onUndo={() => runEditor(undo)}
+            onRedo={() => runEditor(redo)}
+            onBold={() => wrapSelection('\\textbf{', '}')}
+            onItalic={() => wrapSelection('\\textit{', '}')}
+            onUnderline={() => wrapSelection('\\underline{', '}')}
+            onCode={() => wrapSelection('\\texttt{', '}')}
+          />
+          <SelectionToolbar visible={!!selection} onAction={onSelectionAction} />
           <Editor
             key={`${project.id}:${activePath}`}
             doc={doc}
@@ -460,6 +660,7 @@ export default function App() {
             onReady={onEditorReady}
             onAiAction={startAiAction}
             onInsertImage={() => setShowPicker(true)}
+            onSelection={setSelection}
           />
         </section>
 
@@ -498,7 +699,7 @@ export default function App() {
           </nav>
 
           <div className="tab-body">
-            {rightTab === 'pdf' && <PdfViewer pdfUrl={pdfUrl} />}
+            {rightTab === 'pdf' && <PdfViewer pdfUrl={pdfUrl} onRecompile={doCompile} compiling={compile.running} />}
             {rightTab === 'errors' && (
               <ErrorPanel errors={result?.errors || (compile.running ? [] : null)} onJump={jumpToLine} />
             )}
@@ -532,6 +733,14 @@ export default function App() {
           resolveUrl={(p) => api.rawUrl(project.id, p)}
           onClose={() => setShowPicker(false)}
           onInsert={insertImage}
+        />
+      )}
+
+      {showTrash && (
+        <TrashPanel
+          projectId={project.id}
+          onClose={() => setShowTrash(false)}
+          onChanged={refreshTree}
         />
       )}
     </div>

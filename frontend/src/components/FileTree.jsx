@@ -63,6 +63,7 @@ export default function FileTree({
   onDelete,
   onSetMain,
   onUpload,
+  onOpenTrash,
 }) {
   const [menu, setMenu] = useState(null)
   const [creating, setCreating] = useState(null)
@@ -180,7 +181,7 @@ export default function FileTree({
                 <>
                   <button onClick={() => startCreate(node.path, 'file')}>New file</button>
                   <button onClick={() => startCreate(node.path, 'folder')}>New folder</button>
-                  <button onClick={() => pickUpload(node.path)}>Upload image…</button>
+                  <button onClick={() => pickUpload(node.path)}>Upload file…</button>
                   <div className="tree-menu-sep" />
                 </>
               )}
@@ -239,14 +240,14 @@ export default function FileTree({
         <div className="tree-menu header-menu" onClick={(e) => e.stopPropagation()}>
           <button onClick={() => startCreate('', 'file')}>New file</button>
           <button onClick={() => startCreate('', 'folder')}>New folder</button>
-          <button onClick={() => pickUpload('')}>Upload image…</button>
+          <button onClick={() => pickUpload('')}>Upload file…</button>
         </div>
       )}
 
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        accept=".tex,.bib,.sty,.cls,.txt,.csv,.md,.json,.png,.jpg,.jpeg,.gif,.svg,.bmp,.webp,.pdf,.eps"
         multiple
         style={{ display: 'none' }}
         onChange={(e) => {
@@ -276,6 +277,16 @@ export default function FileTree({
       >
         {renderList(tree, 0, '')}
       </div>
+
+      <button className="tree-trash" onClick={() => onOpenTrash?.()} title="Recycle Bin">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 6h18" />
+          <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+          <path d="M10 11v6M14 11v6" />
+        </svg>
+        Recycle Bin
+      </button>
     </div>
   )
 }

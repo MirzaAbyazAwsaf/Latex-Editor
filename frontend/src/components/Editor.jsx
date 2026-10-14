@@ -75,7 +75,7 @@ const latexHighlight = HighlightStyle.define([
 ])
 
 function slashCompletionSource(context) {
-  const word = context.matchBefore(/\/[\w-]*/)
+  const word = context.matchBefore(/\/[\w*-]*/)
   if (!word || (word.from === word.to && !context.explicit)) return null
   const query = word.text.slice(1).toLowerCase()
   const options = SLASH_COMMANDS.filter((cmd) => {
@@ -98,22 +98,31 @@ function slashCompletionSource(context) {
         handlers.current.onAiAction?.(cmd.aiAction)
         return
       }
-      const text = cmd.insert.replace('${}', '')
-      const cursorOffset = cmd.insert.indexOf('${}')
+      const m = cmd.insert.match(/\$\{([^}]*)\}/)
+      let text = cmd.insert
+      let selFrom = cmd.insert.length
+      let selTo = cmd.insert.length
+      if (m) {
+        const before = cmd.insert.slice(0, m.index)
+        const after = cmd.insert.slice(m.index + m[0].length)
+        text = before + m[1] + after
+        selFrom = before.length
+        selTo = before.length + m[1].length
+      }
       view.dispatch({
         changes: { from, to, insert: text },
-        selection: { anchor: from + (cursorOffset === -1 ? text.length : cursorOffset) },
+        selection: { anchor: from + selFrom, head: from + selTo },
       })
     },
   }))
   return { from: word.from, options }
 }
 
-export default function Editor({ doc, onChange, onSave, onCompile, onAiAction, onInsertImage, onReady }) {
+export default function Editor({ doc, onChange, onSave, onCompile, onAiAction, onInsertImage, onSelection, onReady }) {
   const containerRef = useRef(null)
   const viewRef = useRef(null)
-  const handlers = useRef({ onChange, onSave, onCompile, onAiAction, onInsertImage })
-  handlers.current = { onChange, onSave, onCompile, onAiAction, onInsertImage }
+  const handlers = useRef({ onChange, onSave, onCompile, onAiAction, onInsertImage, onSelection })
+  handlers.current = { onChange, onSave, onCompile, onAiAction, onInsertImage, onSelection }
   const loadedRef = useRef(null)
 
   useEffect(() => {
@@ -172,6 +181,11 @@ export default function Editor({ doc, onChange, onSave, onCompile, onAiAction, o
         EditorView.updateListener.of((update) => {
           if (update.docChanged && loadedRef.current === 'ready') {
             handlers.current.onChange(update.state.doc.toString())
+          }
+          if ((update.selectionSet || update.docChanged) && loadedRef.current === 'ready') {
+            const sel = update.state.selection.main
+            const text = sel.empty ? '' : update.state.sliceDoc(sel.from, sel.to)
+            handlers.current.onSelection?.(text)
           }
         }),
         latexTheme,
