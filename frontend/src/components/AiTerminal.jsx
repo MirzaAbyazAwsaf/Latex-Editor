@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { streamAi } from '../api'
 
-export default function AiTerminal({ context, prefill, onApply, models, model, onModelChange }) {
+export default function AiTerminal({ context, prefill, onApply, models, model, onModelChange, providerLabel, onOpenSettings }) {
   const [entries, setEntries] = useState([]) // {role:'user'|'ai'|'system', text, done?}
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
@@ -71,6 +71,17 @@ export default function AiTerminal({ context, prefill, onApply, models, model, o
 
   return (
     <div className="ai-terminal">
+      <div className="ai-header">
+        <span className="ai-provider" title="Active AI provider">{providerLabel || 'AI'}</span>
+        {onOpenSettings && (
+          <button className="icon-btn sm" title="AI settings" onClick={onOpenSettings}>
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+            </svg>
+          </button>
+        )}
+      </div>
       <div className="ai-log" ref={logRef}>
         {entries.length === 0 && (
           <div className="panel-empty">

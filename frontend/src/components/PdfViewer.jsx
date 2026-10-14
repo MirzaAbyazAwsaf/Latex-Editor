@@ -8,82 +8,100 @@ const ZOOMS = [0.5, 0.75, 1, 1.25, 1.5, 2]
 const BASE_SCALE = 1.5
 
 export default function PdfViewer({ pdfUrl, onRecompile, compiling }) {
-  const canvasRef = useRef(null)
-  const wrapRef = useRef(null)
+  const scrollRef = useRef(null)
+  const docRef = useRef(null)
+  const pageRef = useRef(1)
   const [status, setStatus] = useState('idle')
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [zoom, setZoom] = useState(1)
   const [invert, setInvert] = useState(false)
-  const scrollRatioRef = useRef(0)
-  const taskRef = useRef(null)
 
   useEffect(() => {
+    pageRef.current = page
+  }, [page])
+
+  useEffect(() => {
+    const container = scrollRef.current
     if (!pdfUrl) {
+      docRef.current = null
       setStatus('idle')
       setTotal(0)
-      const canvas = canvasRef.current
-      if (canvas) {
-        canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height)
-      }
+      if (container) container.innerHTML = ''
       return
     }
-    if (!canvasRef.current) return
     let cancelled = false
-
-    const scrollEl = wrapRef.current
-    if (scrollEl && scrollEl.scrollHeight > scrollEl.clientHeight) {
-      scrollRatioRef.current = scrollEl.scrollTop / scrollEl.scrollHeight
-    }
-
     setStatus('loading')
     const task = pdfjs.getDocument({ url: pdfUrl })
-    taskRef.current = task
-
     task.promise
-      .then(async (doc) => {
+      .then((doc) => {
         if (cancelled) return
+        docRef.current = doc
+        setPage(1)
         setTotal(doc.numPages)
-        const p = Math.min(page, doc.numPages)
-        const pdfPage = await doc.getPage(p)
-        const viewport = pdfPage.getViewport({ scale: BASE_SCALE * zoom })
-        const canvas = canvasRef.current
-        if (!canvas || cancelled) return
-        const ctx = canvas.getContext('2d')
-        canvas.width = viewport.width
-        canvas.height = viewport.height
-        await pdfPage.render({ canvasContext: ctx, viewport }).promise
-        if (cancelled) return
         setStatus('ready')
-        requestAnimationFrame(() => {
-          if (scrollEl) scrollEl.scrollTop = scrollRatioRef.current * scrollEl.scrollHeight
-        })
-        doc.destroy?.()
       })
       .catch((e) => {
         if (!cancelled) setStatus('error: ' + e.message)
       })
-
     return () => {
       cancelled = true
       task.destroy?.().catch(() => {})
+      docRef.current = null
     }
-  }, [pdfUrl, zoom])
+  }, [pdfUrl])
 
-  const goPage = async (n) => {
-    if (n < 1 || n > total) return
-    setPage(n)
-    if (!pdfUrl) return
-    try {
-      const doc = await pdfjs.getDocument({ url: pdfUrl }).promise
-      const pdfPage = await doc.getPage(n)
-      const viewport = pdfPage.getViewport({ scale: BASE_SCALE * zoom })
-      const canvas = canvasRef.current
-      canvas.width = viewport.width
-      canvas.height = viewport.height
-      await pdfPage.render({ canvasContext: canvas.getContext('2d'), viewport }).promise
-      doc.destroy?.()
-    } catch {}
+  useEffect(() => {
+    const doc = docRef.current
+    const container = scrollRef.current
+    if (status !== 'ready' || !doc || !container) return
+    let cancelled = false
+    container.innerHTML = ''
+
+    const render = async () => {
+      for (let n = 1; n <= doc.numPages; n++) {
+        if (cancelled) return
+        let pdfPage
+        try {
+          pdfPage = await doc.getPage(n)
+        } catch {
+          return
+        }
+        const viewport = pdfPage.getViewport({ scale: BASE_SCALE * zoom })
+        const canvas = document.createElement('canvas')
+        canvas.dataset.page = String(n)
+        canvas.setAttribute('role', 'img')
+        canvas.setAttribute('aria-label', `Page ${n}`)
+        canvas.width = viewport.width
+        canvas.height = viewport.height
+        container.appendChild(canvas)
+        try {
+          await pdfPage.render({ canvasContext: canvas.getContext('2d'), viewport }).promise
+        } catch {
+          return
+        }
+      }
+      if (cancelled) return
+      const target = container.querySelector(`canvas[data-page="${pageRef.current}"]`)
+      if (target) container.scrollTop = target.offsetTop
+    }
+    render()
+    return () => {
+      cancelled = true
+    }
+  }, [status, total, zoom])
+
+  const onScroll = () => {
+    const c = scrollRef.current
+    if (!c) return
+    const mid = c.scrollTop + c.clientHeight / 2
+    const canvases = c.querySelectorAll('canvas')
+    for (const cv of canvases) {
+      if (cv.offsetTop <= mid && mid < cv.offsetTop + cv.offsetHeight) {
+        setPage(Number(cv.dataset.page))
+        break
+      }
+    }
   }
 
   return (
@@ -94,9 +112,7 @@ export default function PdfViewer({ pdfUrl, onRecompile, compiling }) {
             {compiling ? '…' : '▶'} Recompile
           </button>
         )}
-        <button onClick={() => goPage(page - 1)} disabled={page <= 1}>‹</button>
         <span className="pdf-page-ind">Page {total ? page : '-'} / {total || '-'}</span>
-        <button onClick={() => goPage(page + 1)} disabled={page >= total}>›</button>
 
         <span className="pdf-toolbar-spacer" />
 
@@ -130,9 +146,12 @@ export default function PdfViewer({ pdfUrl, onRecompile, compiling }) {
         {status === 'loading' && <span className="pdf-status">…</span>}
         {status.startsWith('error') && <span className="pdf-status error">{status}</span>}
       </div>
-      <div className="pdf-scroll" ref={wrapRef}>
+      <div
+        className={`pdf-scroll${invert ? ' invert' : ''}`}
+        ref={scrollRef}
+        onScroll={onScroll}
+      >
         {!pdfUrl && <div className="pdf-placeholder">Compile to see the PDF</div>}
-        <canvas ref={canvasRef} className={invert ? 'invert' : ''} />
       </div>
     </div>
   )

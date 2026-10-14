@@ -6,6 +6,7 @@ import FileTree from './components/FileTree'
 import PdfViewer from './components/PdfViewer'
 import ErrorPanel from './components/ErrorPanel'
 import AiTerminal from './components/AiTerminal'
+import AiSettings from './components/AiSettings'
 import { ImagePicker, ImagePreview } from './components/ImageModal'
 import TrashPanel from './components/TrashPanel'
 import Outline from './components/Outline'
@@ -53,6 +54,8 @@ export default function App() {
   const [aiPrefill, setAiPrefill] = useState(null)
   const [aiModels, setAiModels] = useState([])
   const [aiModel, setAiModel] = useState('')
+  const [aiSettings, setAiSettings] = useState(null)
+  const [showAiSettings, setShowAiSettings] = useState(false)
   const [engine, setEngine] = useState('pdflatex')
   const [preview, setPreview] = useState(null)
   const [showPicker, setShowPicker] = useState(false)
@@ -92,11 +95,26 @@ export default function App() {
       if (list.length === 0) list = [await api.createProject('My First Document')]
       setProjects(list)
       await openProject(list[0])
-      const m = await api.aiModels()
+      const [m, s] = await Promise.all([api.aiModels(), api.aiSettings()])
       setAiModels(m.models)
-      setAiModel(m.default)
-    })().catch((e) => alert('Failed to load: ' + e.message))
+      setAiModel(m.default || m.models[0] || '')
+      setAiSettings(s)
+    })().catch((e) =>
+      alert(
+        'Could not reach the backend.\n\n' +
+          'Make sure it is running:\n' +
+          '  python -m uvicorn app.main:app --reload --app-dir backend\n\n' +
+          `Details: ${e.message}`
+      )
+    )
   }, [])
+
+  const refreshAi = async (settings) => {
+    const [m, s] = await Promise.all([api.aiModels(), settings ? Promise.resolve(settings) : api.aiSettings()])
+    setAiModels(m.models)
+    setAiModel((prev) => (m.models.includes(prev) ? prev : m.default || m.models[0] || prev))
+    setAiSettings(s)
+  }
 
   const openProject = async (p) => {
     const file = await api.readFile(p.id, p.main_file)
@@ -494,11 +512,8 @@ export default function App() {
   if (!project) return <div className="boot">Loading…</div>
 
   const result = compile.result
-  const statusBadge = {
-    ok: 'badge ok',
-    error: 'badge err',
-    timeout: 'badge err',
-  }
+  const charCount = doc ? doc.length : 0
+  const wordCount = doc && doc.trim() ? doc.trim().split(/\s+/).length : 0
 
   const menus = [
     {
@@ -571,24 +586,22 @@ export default function App() {
   return (
     <div className="app">
       <MenuBar title={project.name} onRenameTitle={renameProject} menus={menus}>
-        <span className={`save-ind ${saveState}`}>
-          {saveState === 'saved' && 'Saved ✓'}
-          {saveState === 'saving' && 'Saving…'}
-          {saveState === 'dirty' && 'Unsaved'}
-          {saveState === 'error' && 'Save failed!'}
-        </span>
-
-        <select value={engine} onChange={(e) => changeEngine(e.target.value)} className="engine-select">
+        <select
+          value={engine}
+          onChange={(e) => changeEngine(e.target.value)}
+          className="engine-select"
+          title="Compiler engine"
+        >
           {ENGINES.map((en) => (
             <option key={en} value={en}>{en}</option>
           ))}
         </select>
 
         <button className="btn primary compile-btn" onClick={doCompile} disabled={compile.running}>
-          {compile.running ? `Compiling… ${(compile.elapsed / 1000).toFixed(1)}s` : '▶ Compile'}
+          {compile.running ? `Compiling… ${(compile.elapsed / 1000).toFixed(1)}s` : 'Recompile'}
         </button>
 
-        <a className="btn" href={api.exportUrl(project.id)} title="Download project as ZIP">⭳ ZIP</a>
+        <a className="btn" href={api.exportUrl(project.id)} title="Download project as ZIP">ZIP</a>
 
         <button className="icon-btn" title="AI assistant" onClick={() => setRightTab('ai')}>
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -596,12 +609,6 @@ export default function App() {
             <path d="M12 8.5 13.4 11 16 12l-2.6 1L12 15.5 10.6 13 8 12l2.6-1z" />
           </svg>
         </button>
-
-        {result && (
-          <span className={statusBadge[result.status] || 'badge'}>
-            {result.status === 'ok' ? `OK ${result.duration_ms}ms` : result.status.toUpperCase()}
-          </span>
-        )}
       </MenuBar>
 
       <main className="workspace">
@@ -711,11 +718,42 @@ export default function App() {
                 models={aiModels}
                 model={aiModel}
                 onModelChange={setAiModel}
+                providerLabel={
+                  aiSettings?.providers?.find((p) => p.id === aiSettings.provider)?.label || aiSettings?.provider
+                }
+                onOpenSettings={() => setShowAiSettings(true)}
               />
             )}
           </div>
         </aside>
       </main>
+
+      <footer className="statusbar">
+        <span className="sb-item" title="Active file">{activePath || '—'}</span>
+        <span className="sb-sep" />
+        <span className="sb-item">{engine}</span>
+        <span className="sb-sep" />
+        <span className="sb-item">{wordCount} words · {charCount} chars</span>
+        <span className="sb-spacer" />
+        {compile.running && (
+          <span className="sb-item sb-run"><span className="sb-dot" />Compiling…</span>
+        )}
+        {!compile.running && result && (
+          <span className={`sb-item ${result.status === 'ok' ? 'sb-ok' : 'sb-err'}`}>
+            <span className="sb-dot" />
+            {result.status === 'ok'
+              ? `Compiled in ${result.duration_ms}ms`
+              : `${result.status.toUpperCase()}${result.errors?.length ? ` · ${result.errors.length} error${result.errors.length > 1 ? 's' : ''}` : ''}`}
+          </span>
+        )}
+        <span className="sb-sep" />
+        <span className={`sb-item sb-save ${saveState}`}>
+          {saveState === 'saved' && 'Saved'}
+          {saveState === 'saving' && 'Saving…'}
+          {saveState === 'dirty' && 'Unsaved'}
+          {saveState === 'error' && 'Save failed'}
+        </span>
+      </footer>
 
       {preview && (
         <ImagePreview
@@ -741,6 +779,14 @@ export default function App() {
           projectId={project.id}
           onClose={() => setShowTrash(false)}
           onChanged={refreshTree}
+        />
+      )}
+
+      {showAiSettings && aiSettings && (
+        <AiSettings
+          settings={aiSettings}
+          onClose={() => setShowAiSettings(false)}
+          onSaved={(s) => refreshAi(s)}
         />
       )}
     </div>

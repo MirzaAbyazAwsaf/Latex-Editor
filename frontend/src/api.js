@@ -1,16 +1,34 @@
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
-async function req(url, options = {}) {
-  const res = await fetch(url, options)
-  if (!res.ok) {
-    let detail = res.statusText
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+const RETRY_STATUS = new Set([502, 503, 504])
+
+async function req(url, options = {}, { retries = 2 } = {}) {
+  const method = (options.method || 'GET').toUpperCase()
+  const idempotent = method === 'GET' || method === 'HEAD'
+  for (let attempt = 0; ; attempt++) {
     try {
-      const body = await res.json()
-      detail = body.detail || JSON.stringify(body)
-    } catch {}
-    throw new Error(`${res.status}: ${detail}`)
+      const res = await fetch(url, options)
+      if (res.ok) return res.json()
+      if (RETRY_STATUS.has(res.status) && attempt < retries) {
+        await sleep(300 * (attempt + 1))
+        continue
+      }
+      let detail = res.statusText
+      try {
+        const body = await res.json()
+        detail = body.detail || JSON.stringify(body)
+      } catch {}
+      throw new Error(`${res.status}: ${detail}`)
+    } catch (e) {
+      if (e.name === 'TypeError' && idempotent && attempt < retries) {
+        await sleep(300 * (attempt + 1))
+        continue
+      }
+      throw e
+    }
   }
-  return res.json()
 }
 
 export const api = {
@@ -66,6 +84,9 @@ export const api = {
   emptyTrash: (id) => req(`/api/projects/${id}/trash/empty`, { method: 'POST' }),
   compile: (id) => req(`/api/projects/${id}/compile`, { method: 'POST' }),
   aiModels: () => req('/api/ai/models'),
+  aiSettings: () => req('/api/ai/settings'),
+  saveAiSettings: (body) =>
+    req('/api/ai/settings', { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify(body) }),
 }
 
 export function streamAi(body, { onToken, onError, onDone }) {

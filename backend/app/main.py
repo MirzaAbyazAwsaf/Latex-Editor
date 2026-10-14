@@ -11,11 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from .ai.ollama_client import list_models, stream_chat
+from .ai import service as ai_service
 from .compile.runner import run_compile
 from .config import (
     ASSET_EXTS,
-    DEFAULT_AI_MODEL,
     ENGINES,
     IMAGE_EXTS,
     MAX_FILE_BYTES,
@@ -181,7 +180,14 @@ def _free_restore_path(project_id: int, original_path: str) -> Path:
 class AiRequest(BaseModel):
     instruction: str = Field(min_length=1)
     context: str = ""
-    model: str = DEFAULT_AI_MODEL
+    model: str = ""
+
+
+class AiSettingsIn(BaseModel):
+    provider: str | None = None
+    model: str | None = None
+    url: str | None = None
+    api_key: str | None = None
 
 
 @app.on_event("startup")
@@ -643,15 +649,34 @@ def export_zip(project_id: int):
 
 # ---------- ai ----------
 
+@app.get("/api/ai/settings")
+async def ai_settings_get():
+    return ai_service.public_settings()
+
+
+@app.put("/api/ai/settings")
+async def ai_settings_put(body: AiSettingsIn):
+    return ai_service.update_settings(
+        provider=body.provider,
+        model=body.model,
+        url=body.url,
+        api_key=body.api_key,
+    )
+
+
 @app.get("/api/ai/models")
 async def ai_models():
-    return {"models": await list_models(), "default": DEFAULT_AI_MODEL}
+    return {
+        "models": await ai_service.list_models(),
+        "default": ai_service.default_model(),
+        "provider": ai_service.public_settings()["provider"],
+    }
 
 
 @app.post("/api/ai/chat")
 async def ai_chat(body: AiRequest):
     async def gen():
-        async for ev in stream_chat(body.model, body.instruction, body.context):
+        async for ev in ai_service.stream_chat(body.model, body.instruction, body.context):
             yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
