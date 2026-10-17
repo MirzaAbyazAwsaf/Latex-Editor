@@ -43,6 +43,7 @@ export const api = {
   patchProject: (id, body) =>
     req(`/api/projects/${id}`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body) }),
   deleteProject: (id) => req(`/api/projects/${id}`, { method: 'DELETE' }),
+  duplicateProject: (id) => req(`/api/projects/${id}/duplicate`, { method: 'POST' }),
   readFile: (id, path = 'main.tex') =>
     req(`/api/projects/${id}/files/content?path=${encodeURIComponent(path)}`),
   writeFile: (id, content, path = 'main.tex') =>

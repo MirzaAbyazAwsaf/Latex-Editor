@@ -226,6 +226,41 @@ def create_project(body: ProjectCreate):
     return dict(row)
 
 
+@app.post("/api/projects/{project_id}/duplicate", response_model=ProjectOut)
+def duplicate_project(project_id: int):
+    with connect() as con:
+        src_row = con.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        if src_row is None:
+            raise HTTPException(404, "project not found")
+        name = f"{src_row['name']} (copy)"[:100]
+        cur = con.execute(
+            "INSERT INTO projects (name, engine, main_file) VALUES (?,?,?)",
+            (name, src_row["engine"], src_row["main_file"]),
+        )
+        new_id = cur.lastrowid
+    old_src = src_dir(project_id)
+    new_src = src_dir(new_id)
+    new_src.parent.mkdir(parents=True, exist_ok=True)
+    if old_src.exists():
+        shutil.copytree(old_src, new_src, dirs_exist_ok=True)
+    rows: list[tuple[str, str, int]] = []
+    if new_src.exists():
+        for path in new_src.rglob("*"):
+            if path.is_file():
+                rel = path.relative_to(new_src).as_posix()
+                rows.append((rel, _kind_for(path.suffix.lower()), path.stat().st_size))
+    with connect() as con:
+        if rows:
+            con.executemany(
+                """INSERT INTO files (project_id, path, kind, size) VALUES (?,?,?,?)
+                   ON CONFLICT(project_id, path)
+                   DO UPDATE SET size=excluded.size, updated_at=CURRENT_TIMESTAMP""",
+                [(new_id, rel, kind, size) for rel, kind, size in rows],
+            )
+        row = con.execute("SELECT * FROM projects WHERE id=?", (new_id,)).fetchone()
+    return dict(row)
+
+
 def _kind_for(ext: str) -> str:
     if ext in IMAGE_EXTS:
         return "image"

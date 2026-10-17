@@ -81,6 +81,7 @@ export default function App() {
   const autoCompileTimerRef = useRef(null)
   const doCompileRef = useRef(null)
   const pendingJumpRef = useRef(null)
+  const openProjectRef = useRef(null)
   const [syncTarget, setSyncTarget] = useState(null)
   const [autoCompile, setAutoCompile] = useState(() => {
     try {
@@ -337,12 +338,15 @@ export default function App() {
     if (!window.confirm(`Delete project "${project.name}"? This cannot be undone.`)) return
     await api.deleteProject(project.id)
     setProject(null)
+    window.history.replaceState({ view: 'home' }, '')
     setView('home')
     await refreshProjects()
   }
 
   // ---------- home ----------
+  // ---------- home ----------
   const openFromHome = async (p) => {
+    window.history.pushState({ view: 'editor', project: p }, '')
     await openProject(p)
     setView('editor')
   }
@@ -373,11 +377,46 @@ export default function App() {
 
   const downloadFromHome = (p) => window.open(api.exportUrl(p.id), '_blank')
 
+  const copyFromHome = async (p) => {
+    await api.duplicateProject(p.id)
+    await refreshProjects()
+  }
+
+  const viewPdfFromHome = (p) => window.open(api.pdfUrl(p.id), '_blank')
+
   const goHome = async () => {
     await saveNow()
-    setView('home')
-    refreshProjects()
+    if (window.history.state?.view === 'editor') {
+      window.history.back()
+    } else {
+      window.history.replaceState({ view: 'home' }, '')
+      setView('home')
+      refreshProjects()
+    }
   }
+
+  useEffect(() => {
+    openProjectRef.current = openProject
+  }, [openProject])
+
+  useEffect(() => {
+    if (!window.history.state?.view) {
+      window.history.replaceState({ view: 'home' }, '')
+    }
+    const onPop = (e) => {
+      const st = e.state
+      if (st?.view === 'editor' && st.project) {
+        Promise.resolve(openProjectRef.current?.(st.project))
+          .then(() => setView('editor'))
+          .catch(() => setView('home'))
+      } else {
+        setView('home')
+        refreshProjects()
+      }
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [refreshProjects])
 
   // ---------- pane resize ----------
   const onDragStart = (which) => (e) => {
@@ -640,6 +679,8 @@ export default function App() {
         onRename={renameFromHome}
         onDelete={deleteFromHome}
         onDownload={downloadFromHome}
+        onCopy={copyFromHome}
+        onViewPdf={viewPdfFromHome}
         theme={theme}
         onToggleTheme={toggleTheme}
       />
