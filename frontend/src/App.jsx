@@ -18,6 +18,7 @@ import './App.css'
 
 const ENGINES = ['pdflatex', 'xelatex', 'lualatex']
 const AUTOSAVE_MS = 1500
+const AUTOCOMPILE_MS = 1000
 const IMAGE_RE = /\.(png|jpe?g|gif|svg|bmp|webp)$/i
 
 const isImage = (p) => IMAGE_RE.test(p)
@@ -50,12 +51,13 @@ export default function App() {
   const [saveState, setSaveState] = useState('saved') // saved | saving | dirty | error
   const [compile, setCompile] = useState({ running: false, result: null, elapsed: 0 })
   const [pdfUrl, setPdfUrl] = useState(null)
-  const [rightTab, setRightTab] = useState('pdf') // pdf | errors | ai
+  const [rightTab, setRightTab] = useState('pdf') // pdf | errors | log | ai
   const [aiPrefill, setAiPrefill] = useState(null)
   const [aiModels, setAiModels] = useState([])
   const [aiModel, setAiModel] = useState('')
   const [aiSettings, setAiSettings] = useState(null)
   const [showAiSettings, setShowAiSettings] = useState(false)
+  const [theme, setTheme] = useState(() => localStorage.getItem('latex-theme') || 'dark')
   const [engine, setEngine] = useState('pdflatex')
   const [preview, setPreview] = useState(null)
   const [showPicker, setShowPicker] = useState(false)
@@ -74,6 +76,15 @@ export default function App() {
   const activePathRef = useRef('main.tex')
   const lastErrorRef = useRef(null)
   const compileTimerRef = useRef(null)
+  const autoCompileTimerRef = useRef(null)
+  const doCompileRef = useRef(null)
+  const [autoCompile, setAutoCompile] = useState(() => {
+    try {
+      return localStorage.getItem('latex-auto-compile') !== 'false'
+    } catch {
+      return true
+    }
+  })
   docRef.current = doc
   activePathRef.current = activePath
 
@@ -87,6 +98,18 @@ export default function App() {
     const to = Math.min(view.state.doc.lines, line.number + 25)
     return view.state.doc.sliceString(view.state.doc.line(from).from, view.state.doc.line(to).to)
   }, [])
+
+  // ---------- theme ----------
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    try { localStorage.setItem('latex-theme', theme) } catch {}
+  }, [theme])
+
+  const toggleTheme = useCallback(() => setTheme((t) => (t === 'dark' ? 'light' : 'dark')), [])
+
+  useEffect(() => {
+    try { localStorage.setItem('latex-auto-compile', autoCompile ? 'true' : 'false') } catch {}
+  }, [autoCompile])
 
   // ---------- boot ----------
   useEffect(() => {
@@ -152,8 +175,14 @@ export default function App() {
     setDoc(text)
     setSaveState('dirty')
     clearTimeout(saveTimerRef.current)
+    clearTimeout(autoCompileTimerRef.current)
     saveTimerRef.current = setTimeout(() => saveNow(), AUTOSAVE_MS)
-  }, [saveNow])
+    if (autoCompile) {
+      autoCompileTimerRef.current = setTimeout(() => {
+        doCompileRef.current?.({ manual: false })
+      }, AUTOCOMPILE_MS)
+    }
+  }, [saveNow, autoCompile])
 
   // ---------- file tree actions ----------
   const openFile = useCallback(
@@ -334,12 +363,13 @@ export default function App() {
   }
 
   // ---------- compile ----------
-  const doCompile = useCallback(async () => {
+  const doCompile = useCallback(async (opts) => {
+    const manual = opts?.manual ?? true
     if (!project || compile.running) return
     clearTimeout(saveTimerRef.current)
     await saveNow()
     setCompile({ running: true, result: null, elapsed: 0 })
-    setRightTab('errors')
+    if (manual) setRightTab('errors')
     const start = Date.now()
     compileTimerRef.current = setInterval(() => {
       setCompile((c) => (c.running ? { ...c, elapsed: Date.now() - start } : c))
@@ -350,17 +380,20 @@ export default function App() {
       setCompile({ running: false, result: res, elapsed: res.duration_ms })
       if (res.pdf_url) setPdfUrl(`/api/projects/${project.id}/pdf?t=${Date.now()}`)
       else setPdfUrl(null)
-      if (res.status === 'ok') setRightTab('pdf')
+      if (manual && res.status === 'ok') setRightTab('pdf')
+      if (!manual && res.status !== 'ok') setRightTab('errors')
     } catch (e) {
       setCompile({
         running: false,
         result: { status: 'error', errors: [{ file: '', line: null, message: e.message }], duration_ms: 0 },
         elapsed: 0,
       })
+      if (!manual) setRightTab('errors')
     } finally {
       clearInterval(compileTimerRef.current)
     }
   }, [project, compile.running, saveNow])
+  doCompileRef.current = doCompile
 
   // ---------- editor ready / jump ----------
   const onEditorReady = (view) => {
@@ -556,6 +589,8 @@ export default function App() {
         { sep: true },
         { label: 'Show PDF', onClick: () => setRightTab('pdf') },
         { label: 'Show errors', onClick: () => setRightTab('errors') },
+        { label: 'Show log', onClick: () => setRightTab('log') },
+        { label: (autoCompile ? 'Disable' : 'Enable') + ' auto-compile', onClick: () => setAutoCompile((v) => !v) },
         { label: 'Show AI assistant', onClick: () => setRightTab('ai') },
       ],
     },
@@ -602,13 +637,6 @@ export default function App() {
         </button>
 
         <a className="btn" href={api.exportUrl(project.id)} title="Download project as ZIP">ZIP</a>
-
-        <button className="icon-btn" title="AI assistant" onClick={() => setRightTab('ai')}>
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 3v4M12 17v4M3 12h4M17 12h4" />
-            <path d="M12 8.5 13.4 11 16 12l-2.6 1L12 15.5 10.6 13 8 12l2.6-1z" />
-          </svg>
-        </button>
       </MenuBar>
 
       <main className="workspace">
@@ -619,7 +647,8 @@ export default function App() {
           onToggleOutline={() => setOutlineOpen((v) => !v)}
           onHistory={() => window.alert('Version history is not available yet.')}
           onShare={() => window.alert('Sharing is not available yet.')}
-          onSettings={() => setRightTab('ai')}
+          theme={theme}
+          onToggleTheme={toggleTheme}
         />
 
         {(filesOpen || outlineOpen) && (
@@ -661,6 +690,7 @@ export default function App() {
           <Editor
             key={`${project.id}:${activePath}`}
             doc={doc}
+            theme={theme}
             onChange={onChange}
             onSave={saveNow}
             onCompile={doCompile}
@@ -694,6 +724,16 @@ export default function App() {
               </span>
               Errors {result?.errors?.length ? `(${result.errors.length})` : ''}
             </button>
+            <button className={rightTab === 'log' ? 'active' : ''} onClick={() => setRightTab('log')}>
+              <span className="tab-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+                  <path d="M14 3v5h5" />
+                  <path d="M16 13H8M16 17H8M10 9H8" />
+                </svg>
+              </span>
+              Log
+            </button>
             <button className={rightTab === 'ai' ? 'active' : ''} onClick={() => setRightTab('ai')}>
               <span className="tab-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -709,6 +749,11 @@ export default function App() {
             {rightTab === 'pdf' && <PdfViewer pdfUrl={pdfUrl} onRecompile={doCompile} compiling={compile.running} />}
             {rightTab === 'errors' && (
               <ErrorPanel errors={result?.errors || (compile.running ? [] : null)} onJump={jumpToLine} />
+            )}
+            {rightTab === 'log' && (
+              <div className="compile-log" style={{ overflow: 'auto', padding: 'var(--space-3)', whiteSpace: 'pre-wrap', fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
+                {compile.running ? 'Compiling...' : (result?.log_excerpt || 'No log available')}
+              </div>
             )}
             {rightTab === 'ai' && (
               <AiTerminal

@@ -605,6 +605,7 @@ def compile_project(project_id: int):
         "status": outcome.status,
         "duration_ms": outcome.duration_ms,
         "errors": outcome.errors,
+        "log_excerpt": outcome.log_excerpt,
         "pdf_url": f"/api/projects/{project_id}/pdf" if outcome.pdf_exists else None,
     }
 

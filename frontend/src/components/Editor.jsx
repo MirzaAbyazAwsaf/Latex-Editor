@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { EditorState } from '@codemirror/state'
+import { EditorState, Compartment } from '@codemirror/state'
 import {
   EditorView,
   keymap,
@@ -23,56 +23,83 @@ import { stex } from '@codemirror/legacy-modes/mode/stex'
 import { tags as tg } from '@lezer/highlight'
 import { SLASH_COMMANDS } from '../slashCommands'
 
-const EDITOR_BG = '#1b222c'
-const EDITOR_FG = '#e6edf3'
+const themeCompartment = new Compartment()
 
-const latexTheme = EditorView.theme(
-  {
-    '&': {
-      height: '100%',
-      fontSize: '14px',
-      backgroundColor: EDITOR_BG,
-      color: EDITOR_FG,
+function editorTheme(light) {
+  const bg = light ? '#ffffff' : '#1b222c'
+  const fg = light ? '#1f2733' : '#e6edf3'
+  const sel = light ? '#bcd3f7' : '#2e4a66'
+  const match = light ? '#2f6fed33' : '#7aa2f740'
+  const brk = light ? '#2f6fed' : '#7aa2f7'
+  return EditorView.theme(
+    {
+      '&': { height: '100%', fontSize: '14px', backgroundColor: bg, color: fg },
+      '.cm-scroller': { fontFamily: "'Cascadia Code', Consolas, monospace" },
+      '.cm-content': { paddingBottom: '40vh', caretColor: fg },
+      '.cm-cursor, .cm-dropCursor': { borderLeftColor: fg },
+      '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {
+        backgroundColor: sel,
+      },
+      '.cm-selectionMatch': { backgroundColor: match },
+      '.cm-matchingBracket, &.cm-focused .cm-matchingBracket': {
+        backgroundColor: match,
+        outline: `1px solid ${brk}`,
+      },
     },
-    '.cm-scroller': { fontFamily: "'Cascadia Code', Consolas, monospace" },
-    '.cm-content': {
-      paddingBottom: '40vh',
-      caretColor: EDITOR_FG,
-    },
-    '.cm-cursor, .cm-dropCursor': { borderLeftColor: EDITOR_FG },
-    '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {
-      backgroundColor: '#2e4a66',
-    },
-    '.cm-selectionMatch': { backgroundColor: '#7aa2f740' },
-    '.cm-matchingBracket, &.cm-focused .cm-matchingBracket': {
-      backgroundColor: '#7aa2f740',
-      outline: '1px solid #7aa2f7',
-    },
-  },
-  { dark: true },
-)
+    { dark: !light },
+  )
+}
 
-const latexHighlight = HighlightStyle.define([
-  { tag: tg.keyword, color: '#c792ea' },
-  { tag: tg.controlKeyword, color: '#c792ea' },
-  { tag: tg.comment, color: '#7c8b9a', fontStyle: 'italic' },
-  { tag: tg.lineComment, color: '#7c8b9a', fontStyle: 'italic' },
-  { tag: tg.blockComment, color: '#7c8b9a', fontStyle: 'italic' },
-  { tag: tg.string, color: '#c3e88d' },
-  { tag: tg.special(tg.string), color: '#f78c6c' },
-  { tag: tg.number, color: '#f78c6c' },
-  { tag: tg.bool, color: '#f78c6c' },
-  { tag: tg.operator, color: '#89ddff' },
-  { tag: tg.bracket, color: '#89ddff' },
-  { tag: tg.squareBracket, color: '#89ddff' },
-  { tag: tg.brace, color: '#89ddff' },
-  { tag: tg.tagName, color: '#82aaff' },
-  { tag: tg.typeName, color: '#ffcb6b' },
-  { tag: tg.attributeName, color: '#ffcb6b' },
-  { tag: tg.meta, color: '#ffcb6b' },
-  { tag: tg.variableName, color: EDITOR_FG },
-  { tag: tg.definition(tg.variableName), color: '#82aaff' },
-])
+function highlightFor(light) {
+  const c = light
+    ? {
+        keyword: '#a626a4',
+        comment: '#8a94a6',
+        string: '#50a14f',
+        special: '#c18401',
+        number: '#986801',
+        operator: '#0184bc',
+        tag: '#4078f2',
+        type: '#c18401',
+        variable: '#1f2733',
+      }
+    : {
+        keyword: '#c792ea',
+        comment: '#7c8b9a',
+        string: '#c3e88d',
+        special: '#f78c6c',
+        number: '#f78c6c',
+        operator: '#89ddff',
+        tag: '#82aaff',
+        type: '#ffcb6b',
+        variable: '#e6edf3',
+      }
+  return HighlightStyle.define([
+    { tag: tg.keyword, color: c.keyword },
+    { tag: tg.controlKeyword, color: c.keyword },
+    { tag: tg.comment, color: c.comment, fontStyle: 'italic' },
+    { tag: tg.lineComment, color: c.comment, fontStyle: 'italic' },
+    { tag: tg.blockComment, color: c.comment, fontStyle: 'italic' },
+    { tag: tg.string, color: c.string },
+    { tag: tg.special(tg.string), color: c.special },
+    { tag: tg.number, color: c.number },
+    { tag: tg.bool, color: c.number },
+    { tag: tg.operator, color: c.operator },
+    { tag: tg.bracket, color: c.operator },
+    { tag: tg.squareBracket, color: c.operator },
+    { tag: tg.brace, color: c.operator },
+    { tag: tg.tagName, color: c.tag },
+    { tag: tg.typeName, color: c.type },
+    { tag: tg.attributeName, color: c.type },
+    { tag: tg.meta, color: c.type },
+    { tag: tg.variableName, color: c.variable },
+    { tag: tg.definition(tg.variableName), color: c.tag },
+  ])
+}
+
+function themeExtension(light) {
+  return [editorTheme(light), syntaxHighlighting(highlightFor(light))]
+}
 
 function slashCompletionSource(context) {
   const word = context.matchBefore(/\/[\w*-]*/)
@@ -118,7 +145,7 @@ function slashCompletionSource(context) {
   return { from: word.from, options }
 }
 
-export default function Editor({ doc, onChange, onSave, onCompile, onAiAction, onInsertImage, onSelection, onReady }) {
+export default function Editor({ doc, theme = 'dark', onChange, onSave, onCompile, onAiAction, onInsertImage, onSelection, onReady }) {
   const containerRef = useRef(null)
   const viewRef = useRef(null)
   const handlers = useRef({ onChange, onSave, onCompile, onAiAction, onInsertImage, onSelection })
@@ -145,7 +172,6 @@ export default function Editor({ doc, onChange, onSave, onCompile, onAiAction, o
         bracketMatching(),
         closeBrackets(),
         highlightSelectionMatches(),
-        syntaxHighlighting(latexHighlight),
         StreamLanguage.define(stex),
         completion,
         keymap.of([
@@ -188,7 +214,7 @@ export default function Editor({ doc, onChange, onSave, onCompile, onAiAction, o
             handlers.current.onSelection?.(text)
           }
         }),
-        latexTheme,
+        themeCompartment.of(themeExtension(theme === 'light')),
       ],
     })
 
@@ -203,6 +229,13 @@ export default function Editor({ doc, onChange, onSave, onCompile, onAiAction, o
       loadedRef.current = null
     }
   }, [])
+
+  // Reconfigure theme on change
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({ effects: themeCompartment.reconfigure(themeExtension(theme === 'light')) })
+  }, [theme])
 
   // External doc load (project switch / file open)
   useEffect(() => {

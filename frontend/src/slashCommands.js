@@ -281,6 +281,59 @@ export const SLASH_COMMANDS = [
   { label: '/begin', detail: 'Begin an environment', insert: '\\begin{${}}', type: 'namespace', keywords: ['environment'] },
   { label: '/end', detail: 'End an environment', insert: '\\end{${}}', type: 'namespace', keywords: ['environment'] },
 
+  // ================= project / thesis extras =================
+  { label: '/LaTeX', detail: 'LaTeX logo', insert: '\\LaTeX', type: 'constant', keywords: ['logo', 'logo'] },
+  { label: '/copyright', detail: 'Copyright symbol', insert: '\\copyright', type: 'constant', keywords: ['c', 'symbol'] },
+  { label: '/centerline', detail: 'Center a single line', insert: '\\centerline{${}}', type: 'namespace', keywords: ['align', 'center'] },
+  { label: '/hrulefill', detail: 'Horizontal rule that fills', insert: '\\hrulefill', type: 'namespace', keywords: ['rule', 'fill', 'signature'] },
+  { label: '/wildcard', detail: 'Project signature block (\\wildcard)', insert: '\\wildcard{${}}', type: 'namespace', keywords: ['signature', 'declaration', 'project'] },
+  { label: '/addcontentsline', detail: 'Add entry to TOC / LOF / LOT', insert: '\\addcontentsline{toc}{${chapter}}{}', type: 'property', keywords: ['toc', 'contents'] },
+  { label: '/phantomsection', detail: 'Anchor for hyperref', insert: '\\phantomsection', type: 'namespace', keywords: ['anchor', 'hyperref'] },
+  { label: '/pagenumbering', detail: 'Set page-number style', insert: '\\pagenumbering{${roman}}', type: 'namespace', keywords: ['page', 'numbering', 'roman'] },
+  { label: '/parindent', detail: 'Paragraph indent length', insert: '\\setlength{\\parindent}{${0pt}}', type: 'namespace', keywords: ['indent', 'length'] },
+  { label: '/textwidth', detail: 'Text width length', insert: '\\textwidth', type: 'namespace', keywords: ['length', 'width'] },
+  { label: '/thepage', detail: 'Current page number', insert: '\\thepage', type: 'namespace', keywords: ['counter', 'page'] },
+  { label: '/thetable', detail: 'Current table number', insert: '\\thetable', type: 'namespace', keywords: ['counter', 'table'] },
+  { label: '/tablename', detail: 'Localized "Table" name', insert: '\\tablename', type: 'namespace', keywords: ['caption', 'table'] },
+  { label: '/resizebox', detail: 'Scale box to fit', insert: '\\resizebox{${0.8\\linewidth}}{!}{}', type: 'namespace', keywords: ['graphicx', 'scale', 'box'] },
+  { label: '/let', detail: 'Assign a control sequence', insert: '\\let\\${clearcommand}=\\relax', type: 'namespace', keywords: ['tex', 'define'] },
+  { label: '/begingroup', detail: 'Begin a group', insert: '\\begingroup\n${}\n\\endgroup', type: 'namespace', keywords: ['group', 'scope'] },
+  { label: '/endgroup', detail: 'End a group', insert: '\\endgroup', type: 'namespace', keywords: ['group', 'scope'] },
+
+  // ---------- font sizes ----------
+  { label: '/tiny', detail: 'Tiny text', insert: '{\\tiny ${}}', type: 'text', keywords: ['font', 'size'] },
+  { label: '/scriptsize', detail: 'Script-size text', insert: '{\\scriptsize ${}}', type: 'text', keywords: ['font', 'size'] },
+  { label: '/footnotesize', detail: 'Footnote-size text', insert: '{\\footnotesize ${}}', type: 'text', keywords: ['font', 'size'] },
+  { label: '/small', detail: 'Small text', insert: '{\\small ${}}', type: 'text', keywords: ['font', 'size'] },
+  { label: '/normalsize', detail: 'Normal-size text', insert: '{\\normalsize ${}}', type: 'text', keywords: ['font', 'size'] },
+  { label: '/large', detail: 'Large text', insert: '{\\large ${}}', type: 'text', keywords: ['font', 'size'] },
+  { label: '/Large', detail: 'Larger text', insert: '{\\Large ${}}', type: 'text', keywords: ['font', 'size'] },
+  { label: '/LARGE', detail: 'Largest text', insert: '{\\LARGE ${}}', type: 'text', keywords: ['font', 'size'] },
+  { label: '/huge', detail: 'Huge text', insert: '{\\huge ${}}', type: 'text', keywords: ['font', 'size'] },
+  { label: '/Huge', detail: 'Huger text', insert: '{\\Huge ${}}', type: 'text', keywords: ['font', 'size'] },
+  { label: '/fontsize', detail: 'Set font size / leading', insert: '\\fontsize{${10}}{12}\\selectfont ', type: 'namespace', keywords: ['font', 'size'] },
+  { label: '/selectfont', detail: 'Apply selected font', insert: '\\selectfont', type: 'namespace', keywords: ['font'] },
+
+  // ---------- math extras ----------
+  { label: '/max', detail: 'Maximum operator', insert: '\\max', type: 'function', keywords: ['math', 'operator'] },
+  { label: '/min', detail: 'Minimum operator', insert: '\\min', type: 'function', keywords: ['math', 'operator'] },
+  { label: '/mathbf', detail: 'Bold math (upright)', insert: '\\mathbf{${}}', type: 'function', keywords: ['math', 'bold'] },
+  { label: '/mathrm', detail: 'Upright math', insert: '\\mathrm{${}}', type: 'function', keywords: ['math', 'roman'] },
+  { label: '/left', detail: 'Auto-sized left/right delimiters', insert: '\\left( ${} \\right)', type: 'function', keywords: ['math', 'delimiter', 'paren', 'bracket'] },
+  { label: '/right', detail: 'Closing auto-sized delimiter', insert: '\\right)', type: 'function', keywords: ['math', 'delimiter'] },
+
+  // ---------- bibliography / nomenclature ----------
+  { label: '/thebibliography', detail: 'Manual bibliography environment', insert: '\\begin{thebibliography}{${9}}\n\\bibitem{key} Author. \\emph{Title}. Year.\n\\end{thebibliography}', type: 'property', keywords: ['bib', 'references'] },
+  { label: '/bibitem', detail: 'A bibliography entry', insert: '\\bibitem{${}}', type: 'property', keywords: ['bib', 'reference'] },
+  { label: '/makenomenclature', detail: 'Build nomenclature list', insert: '\\makenomenclature', type: 'property', keywords: ['nomencl', 'glossary', 'symbols'] },
+  { label: '/printnomenclature', detail: 'Print nomenclature list', insert: '\\printnomenclature', type: 'property', keywords: ['nomencl', 'glossary', 'symbols'] },
+
+  // ---------- thesis/long documents ----------
+  { label: '/titlepage', detail: 'Title page environment', insert: '\\begin{titlepage}\n\\centering\n${}\n\\end{titlepage}', type: 'namespace', keywords: ['cover', 'title'] },
+  { label: '/appendices', detail: 'Appendices environment', insert: '\\begin{appendices}\n${}\n\\end{appendices}', type: 'namespace', keywords: ['appendix', 'back matter'] },
+  { label: '/document', detail: 'Document environment', insert: '\\begin{document}\n${}\n\\end{document}', type: 'namespace', keywords: ['body', 'start'] },
+  { label: '/longtable', detail: 'Multi-page table (longtable)', insert: '\\begin{longtable}{${ll}}\n\\caption{}\\label{}\\\\\n\\toprule\n\\endfirsthead\n\\toprule\n\\endhead\n\\bottomrule\n\\endlastfoot\n${} & \\\\\n\\end{longtable}', type: 'type', keywords: ['table', 'long', 'multi-page', 'booktabs'] },
+
   // ================= AI actions =================
   { label: '/ai', detail: 'Ask the AI assistant', aiAction: 'ai', type: 'module', keywords: ['assistant', 'chat'], boost: 5 },
   { label: '/fix', detail: 'Fix last compile error with AI', aiAction: 'fix', type: 'module', keywords: ['error', 'repair'], boost: 5 },

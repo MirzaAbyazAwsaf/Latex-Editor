@@ -346,3 +346,6 @@ Editor Design
 - Backend language: FastAPI (Python) assumed; Node/Express is an equal alternative.
 - Default model: `qwen2.5-coder:7b` (8 GB+ RAM) or `llama3.2:3b` (lighter machines).
 - Session cookies (assumed) versus JWT.
+
+##commands
+python -m uvicorn app.main:app --reload 

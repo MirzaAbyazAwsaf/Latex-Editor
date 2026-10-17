@@ -52,7 +52,6 @@ def run_compile(project_id: int, engine: str, main_file: str) -> CompileOutcome:
     cmd = [
         _engine_path(engine),
         "-interaction=nonstopmode",
-        "-halt-on-error",
         "-no-shell-escape",
         f"-output-directory={out}",
         str(src / main_file),
@@ -78,28 +77,25 @@ def run_compile(project_id: int, engine: str, main_file: str) -> CompileOutcome:
             log_file = out / f"{stem}.log"
             if log_file.exists():
                 log_text = log_file.read_text(encoding="utf-8", errors="replace")
-            if returncode != 0:
-                break
     except subprocess.TimeoutExpired:
         timed_out = True
 
     duration_ms = int((time.monotonic() - start) * 1000)
     pdf_path = out / f"{stem}.pdf"
-    pdf_exists = returncode == 0 and pdf_path.exists() and pdf_path.stat().st_size > 0
+    pdf_exists = pdf_path.exists() and pdf_path.stat().st_size > 0
+
+    parsed = parse_log(log_text, main_file)
+    errors = [
+        {"file": e.file, "line": e.line, "message": e.message}
+        for e in parsed.errors
+    ]
 
     if timed_out:
         status = "timeout"
-        errors = []
-    elif returncode == 0 and pdf_exists:
+    elif pdf_exists:
         status = "ok"
-        errors = []
     else:
         status = "error"
-        parsed = parse_log(log_text, main_file)
-        errors = [
-            {"file": e.file, "line": e.line, "message": e.message}
-            for e in parsed.errors
-        ]
         if not errors:
             errors = [
                 {

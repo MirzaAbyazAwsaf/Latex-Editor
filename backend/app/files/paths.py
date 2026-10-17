@@ -3,7 +3,15 @@ from pathlib import Path
 
 from ..config import DATA_DIR
 
-SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9._ -]+$")
+# A path segment may contain any printable character EXCEPT the ones Windows
+# forbids in file/folder names and control characters. This allows commas,
+# parentheses, ampersands, etc. (e.g. "rnn, cnn, lstm").
+SAFE_SEGMENT = re.compile(r'^[^<>:"/\\|?*\x00-\x1f]+$')
+RESERVED_NAMES = {
+    "con", "prn", "aux", "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
 DISALLOWED_EXT = {".exe", ".bat", ".cmd", ".sh", ".ps1", ".dll", ".com", ".scr"}
 
 
@@ -37,8 +45,12 @@ def validate_relative_path(rel: str) -> str:
         raise PathValidationError("path traversal not allowed")
     parts = rel.split("/")
     for part in parts:
-        if not SAFE_SEGMENT.match(part):
+        if part in (".", "..") or not SAFE_SEGMENT.match(part):
             raise PathValidationError(f"invalid character in path: {part}")
+        if part.rstrip() != part or part.rstrip(".") != part:
+            raise PathValidationError(f"name cannot end with a space or dot: {part}")
+        if part.split(".")[0].lower() in RESERVED_NAMES:
+            raise PathValidationError(f"reserved name not allowed: {part}")
     if Path(rel).suffix.lower() in DISALLOWED_EXT:
         raise PathValidationError("file type not allowed")
     return rel
