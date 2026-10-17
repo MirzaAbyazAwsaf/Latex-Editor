@@ -7,7 +7,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerSrc
 const ZOOMS = [0.5, 0.75, 1, 1.25, 1.5, 2]
 const BASE_SCALE = 1.5
 
-export default function PdfViewer({ pdfUrl, onRecompile, compiling }) {
+export default function PdfViewer({ pdfUrl, onRecompile, compiling, onInverse, onForward, sync }) {
   const scrollRef = useRef(null)
   const docRef = useRef(null)
   const pageRef = useRef(1)
@@ -104,6 +104,55 @@ export default function PdfViewer({ pdfUrl, onRecompile, compiling }) {
     }
   }
 
+  // Forward-search highlight: scroll to the target page and flash a marker.
+  useEffect(() => {
+    const container = scrollRef.current
+    if (!sync || status !== 'ready' || !container) return
+    const canvas = container.querySelector(`canvas[data-page="${sync.page}"]`)
+    if (!canvas) return
+    const scale = BASE_SCALE * zoom
+    const rect = canvas.getBoundingClientRect()
+    const rx = canvas.width ? rect.width / canvas.width : 1
+    const ry = canvas.height ? rect.height / canvas.height : 1
+    const left = canvas.offsetLeft + sync.x * scale * rx
+    const top = canvas.offsetTop + sync.y * scale * ry
+    const w = Math.max(6, (sync.width || 10) * scale * rx)
+    const h = Math.max(5, (sync.height || 10) * scale * ry)
+
+    let marker = container.querySelector('.pdf-sync-marker')
+    if (!marker) {
+      marker = document.createElement('div')
+      marker.className = 'pdf-sync-marker'
+      container.appendChild(marker)
+    }
+    marker.style.left = `${left}px`
+    marker.style.top = `${top}px`
+    marker.style.width = `${w}px`
+    marker.style.height = `${h}px`
+    marker.style.opacity = '1'
+    container.scrollTop = Math.max(0, top - container.clientHeight / 3)
+    const t = setTimeout(() => {
+      marker.style.opacity = '0'
+    }, 1800)
+    return () => clearTimeout(t)
+  }, [sync, status, total, zoom])
+
+  const onCanvasClick = (e) => {
+    if (!onInverse || !(e.ctrlKey || e.metaKey)) return
+    const canvas = e.target?.closest?.('canvas')
+    if (!canvas) return
+    e.preventDefault()
+    const rect = canvas.getBoundingClientRect()
+    const rx = canvas.width ? canvas.width / rect.width : 1
+    const ry = canvas.height ? canvas.height / rect.height : 1
+    const scale = BASE_SCALE * zoom
+    onInverse({
+      page: Number(canvas.dataset.page),
+      x: ((e.clientX - rect.left) * rx) / scale,
+      y: ((e.clientY - rect.top) * ry) / scale,
+    })
+  }
+
   return (
     <div className="pdf-viewer">
       <div className="pdf-toolbar">
@@ -115,6 +164,16 @@ export default function PdfViewer({ pdfUrl, onRecompile, compiling }) {
         <span className="pdf-page-ind">Page {total ? page : '-'} / {total || '-'}</span>
 
         <span className="pdf-toolbar-spacer" />
+
+        {onForward && (
+          <button
+            className="pdf-tool-btn"
+            title="Sync to current editor line (Ctrl/⌘+click the PDF to jump back)"
+            onClick={onForward}
+          >
+            ⇄
+          </button>
+        )}
 
         <button
           className={`pdf-tool-btn${invert ? ' active' : ''}`}
@@ -150,6 +209,8 @@ export default function PdfViewer({ pdfUrl, onRecompile, compiling }) {
         className={`pdf-scroll${invert ? ' invert' : ''}`}
         ref={scrollRef}
         onScroll={onScroll}
+        onClick={onCanvasClick}
+        title={onInverse ? 'Ctrl/⌘+click to jump to source' : undefined}
       >
         {!pdfUrl && <div className="pdf-placeholder">Compile to see the PDF</div>}
       </div>

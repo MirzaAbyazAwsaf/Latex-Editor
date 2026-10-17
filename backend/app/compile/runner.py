@@ -53,6 +53,7 @@ def run_compile(project_id: int, engine: str, main_file: str) -> CompileOutcome:
         _engine_path(engine),
         "-interaction=nonstopmode",
         "-no-shell-escape",
+        "-synctex=1",
         f"-output-directory={out}",
         str(src / main_file),
     ]

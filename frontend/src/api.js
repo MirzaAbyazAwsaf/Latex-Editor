@@ -35,6 +35,11 @@ export const api = {
   listProjects: () => req('/api/projects'),
   createProject: (name) =>
     req('/api/projects', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ name }) }),
+  importProject: (file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return req('/api/projects/import', { method: 'POST', body: fd })
+  },
   patchProject: (id, body) =>
     req(`/api/projects/${id}`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body) }),
   deleteProject: (id) => req(`/api/projects/${id}`, { method: 'DELETE' }),
@@ -83,6 +88,10 @@ export const api = {
     req(`/api/projects/${id}/trash/${trashId}`, { method: 'DELETE' }),
   emptyTrash: (id) => req(`/api/projects/${id}/trash/empty`, { method: 'POST' }),
   compile: (id) => req(`/api/projects/${id}/compile`, { method: 'POST' }),
+  synctexView: (id, file, line) =>
+    req(`/api/projects/${id}/synctex/view?file=${encodeURIComponent(file)}&line=${line}`),
+  synctexEdit: (id, page, x, y) =>
+    req(`/api/projects/${id}/synctex/edit?page=${page}&x=${x}&y=${y}`),
   aiModels: () => req('/api/ai/models'),
   aiSettings: () => req('/api/ai/settings'),
   saveAiSettings: (body) =>

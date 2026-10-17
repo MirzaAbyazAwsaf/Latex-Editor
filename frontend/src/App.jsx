@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { undo, redo, selectAll } from '@codemirror/commands'
 import { api } from './api'
 import Editor from './components/Editor'
+import Home from './components/Home'
 import FileTree from './components/FileTree'
 import PdfViewer from './components/PdfViewer'
 import ErrorPanel from './components/ErrorPanel'
@@ -44,6 +45,7 @@ function loadWidth(key, fallback) {
 
 export default function App() {
   const [projects, setProjects] = useState([])
+  const [view, setView] = useState('home') // home | editor
   const [project, setProject] = useState(null)
   const [tree, setTree] = useState([])
   const [activePath, setActivePath] = useState('main.tex')
@@ -78,6 +80,8 @@ export default function App() {
   const compileTimerRef = useRef(null)
   const autoCompileTimerRef = useRef(null)
   const doCompileRef = useRef(null)
+  const pendingJumpRef = useRef(null)
+  const [syncTarget, setSyncTarget] = useState(null)
   const [autoCompile, setAutoCompile] = useState(() => {
     try {
       return localStorage.getItem('latex-auto-compile') !== 'false'
@@ -114,10 +118,8 @@ export default function App() {
   // ---------- boot ----------
   useEffect(() => {
     ;(async () => {
-      let list = await api.listProjects()
-      if (list.length === 0) list = [await api.createProject('My First Document')]
+      const list = await api.listProjects()
       setProjects(list)
-      await openProject(list[0])
       const [m, s] = await Promise.all([api.aiModels(), api.aiSettings()])
       setAiModels(m.models)
       setAiModel(m.default || m.models[0] || '')
@@ -130,6 +132,12 @@ export default function App() {
           `Details: ${e.message}`
       )
     )
+  }, [])
+
+  const refreshProjects = useCallback(async () => {
+    const list = await api.listProjects()
+    setProjects(list)
+    return list
   }, [])
 
   const refreshAi = async (settings) => {
@@ -328,7 +336,47 @@ export default function App() {
     if (!project) return
     if (!window.confirm(`Delete project "${project.name}"? This cannot be undone.`)) return
     await api.deleteProject(project.id)
-    window.location.reload()
+    setProject(null)
+    setView('home')
+    await refreshProjects()
+  }
+
+  // ---------- home ----------
+  const openFromHome = async (p) => {
+    await openProject(p)
+    setView('editor')
+  }
+
+  const createFromHome = async (name) => {
+    const p = await api.createProject(name)
+    await refreshProjects()
+    return p
+  }
+
+  const importFromHome = async (file) => {
+    await api.importProject(file)
+    await refreshProjects()
+  }
+
+  const renameFromHome = async (p) => {
+    const name = window.prompt('Project name:', p.name)
+    if (!name || name === p.name) return
+    await api.patchProject(p.id, { name })
+    await refreshProjects()
+  }
+
+  const deleteFromHome = async (p) => {
+    if (!window.confirm(`Delete project "${p.name}"? This cannot be undone.`)) return
+    await api.deleteProject(p.id)
+    await refreshProjects()
+  }
+
+  const downloadFromHome = (p) => window.open(api.exportUrl(p.id), '_blank')
+
+  const goHome = async () => {
+    await saveNow()
+    setView('home')
+    refreshProjects()
   }
 
   // ---------- pane resize ----------
@@ -398,6 +446,13 @@ export default function App() {
   // ---------- editor ready / jump ----------
   const onEditorReady = (view) => {
     editorViewRef.current = view
+    const pending = pendingJumpRef.current
+    if (pending != null) {
+      pendingJumpRef.current = null
+      const line = view.state.doc.line(Math.min(pending, view.state.doc.lines))
+      view.dispatch({ selection: { anchor: line.from, head: line.to }, scrollIntoView: true })
+      view.focus()
+    }
   }
 
   const jumpToLine = (lineNo) => {
@@ -411,6 +466,39 @@ export default function App() {
     })
     view.focus()
   }
+
+  // ---------- synctex ----------
+  const syncToPdf = useCallback(async () => {
+    const view = editorViewRef.current
+    if (!project || !view) return
+    const line = view.state.doc.lineAt(view.state.selection.main.head).number
+    try {
+      const res = await api.synctexView(project.id, activePathRef.current, line)
+      setSyncTarget({ ...res, token: Date.now() })
+      setRightTab('pdf')
+    } catch {
+      setRightTab('pdf')
+    }
+  }, [project])
+
+  const inverseSearch = useCallback(
+    async ({ page, x, y }) => {
+      if (!project) return
+      try {
+        const res = await api.synctexEdit(project.id, page, x, y)
+        if (!res?.file) return
+        if (res.file !== activePathRef.current) {
+          pendingJumpRef.current = res.line
+          await openFile(res.file)
+        } else {
+          jumpToLine(res.line)
+        }
+      } catch {
+        /* no synctex data yet */
+      }
+    },
+    [project, openFile],
+  )
 
   // ---------- AI actions ----------
   const startAiAction = useCallback(
@@ -542,7 +630,21 @@ export default function App() {
     return () => window.removeEventListener('keydown', h)
   }, [doCompile, saveNow])
 
-  if (!project) return <div className="boot">Loading…</div>
+  if (view === 'home' || !project) {
+    return (
+      <Home
+        projects={projects}
+        onOpen={openFromHome}
+        onCreate={createFromHome}
+        onImport={importFromHome}
+        onRename={renameFromHome}
+        onDelete={deleteFromHome}
+        onDownload={downloadFromHome}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
+    )
+  }
 
   const result = compile.result
   const charCount = doc ? doc.length : 0
@@ -552,6 +654,8 @@ export default function App() {
     {
       label: 'File',
       items: [
+        { label: 'All projects', onClick: goHome },
+        { sep: true },
         { label: 'Rename project…', onClick: renameProject },
         { label: 'Download PDF', onClick: () => window.open(api.pdfUrl(project.id), '_blank') },
         { label: 'Download project (.zip)', onClick: () => window.open(api.exportUrl(project.id), '_blank') },
@@ -584,14 +688,15 @@ export default function App() {
     {
       label: 'View',
       items: [
-        { label: (filesOpen ? 'Hide' : 'Show') + ' files', onClick: () => setFilesOpen((v) => !v) },
-        { label: (outlineOpen ? 'Hide' : 'Show') + ' outline', onClick: () => setOutlineOpen((v) => !v) },
-        { sep: true },
+        { label: 'Show files', onClick: () => setFilesOpen((v) => !v) },
+        { label: 'Show outline', onClick: () => setOutlineOpen((v) => !v) },
         { label: 'Show PDF', onClick: () => setRightTab('pdf') },
         { label: 'Show errors', onClick: () => setRightTab('errors') },
         { label: 'Show log', onClick: () => setRightTab('log') },
-        { label: (autoCompile ? 'Disable' : 'Enable') + ' auto-compile', onClick: () => setAutoCompile((v) => !v) },
-        { label: 'Show AI assistant', onClick: () => setRightTab('ai') },
+        { label: 'Show AI', onClick: () => setRightTab('ai') },
+        { sep: true },
+        { label: 'Sync to PDF', hint: 'cursor → PDF', onClick: syncToPdf },
+        { label: 'Auto-compile', onClick: () => setAutoCompile((v) => !v) },
       ],
     },
     {
@@ -746,7 +851,16 @@ export default function App() {
           </nav>
 
           <div className="tab-body">
-            {rightTab === 'pdf' && <PdfViewer pdfUrl={pdfUrl} onRecompile={doCompile} compiling={compile.running} />}
+            {rightTab === 'pdf' && (
+              <PdfViewer
+                pdfUrl={pdfUrl}
+                onRecompile={doCompile}
+                compiling={compile.running}
+                onForward={syncToPdf}
+                onInverse={pdfUrl ? inverseSearch : null}
+                sync={syncTarget}
+              />
+            )}
             {rightTab === 'errors' && (
               <ErrorPanel errors={result?.errors || (compile.running ? [] : null)} onJump={jumpToLine} />
             )}

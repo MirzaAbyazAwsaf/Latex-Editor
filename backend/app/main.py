@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .ai import service as ai_service
+from .compile import synctex
 from .compile.runner import run_compile
 from .config import (
     ASSET_EXTS,
@@ -64,6 +65,8 @@ class ProjectOut(BaseModel):
     name: str
     main_file: str
     engine: str
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class ProjectCreate(BaseModel):
@@ -218,6 +221,119 @@ def create_project(body: ProjectCreate):
         con.execute(
             "INSERT INTO files (project_id, path, kind, size) VALUES (?,?,?,?)",
             (project_id, "main.tex", "tex", len(DEFAULT_TEX)),
+        )
+        row = con.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+    return dict(row)
+
+
+def _kind_for(ext: str) -> str:
+    if ext in IMAGE_EXTS:
+        return "image"
+    if ext == ".tex":
+        return "tex"
+    if ext == ".bib":
+        return "bib"
+    return "other"
+
+
+def _pick_main_file(src: Path, tex_paths: list[str]) -> str:
+    if "main.tex" in tex_paths:
+        return "main.tex"
+    for t in tex_paths:
+        try:
+            if "\\documentclass" in (src / t).read_text(encoding="utf-8", errors="replace"):
+                return t
+        except OSError:
+            continue
+    return tex_paths[0] if tex_paths else "main.tex"
+
+
+def _zip_entries(raw: bytes) -> list[tuple[str, bytes]]:
+    """Return (relpath, content) for importable files inside a .zip upload."""
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+    except zipfile.BadZipFile:
+        raise HTTPException(400, "not a valid .zip archive")
+
+    names = [i.filename.replace("\\", "/") for i in zf.infolist() if not i.is_dir()]
+    # Strip a single common top-level folder (e.g. an Overleaf export root).
+    prefix = ""
+    heads = {n.split("/", 1)[0] for n in names if "/" in n}
+    if heads and len(heads) == 1 and all("/" in n for n in names):
+        prefix = heads.pop() + "/"
+
+    entries: list[tuple[str, bytes]] = []
+    for info in zf.infolist():
+        if info.is_dir():
+            continue
+        nm = info.filename.replace("\\", "/")
+        if "__MACOSX" in nm or nm.split("/")[-1].startswith("."):
+            continue
+        if prefix and nm.startswith(prefix):
+            nm = nm[len(prefix):]
+        if not nm:
+            continue
+        if Path(nm).suffix.lower() not in UPLOAD_EXTS:
+            continue
+        try:
+            validate_relative_path(nm)
+        except PathValidationError:
+            continue
+        entries.append((nm, zf.read(info)))
+    return entries
+
+
+@app.post("/api/projects/import", response_model=ProjectOut)
+async def import_project(file: UploadFile = File(...)):
+    raw = await file.read()
+    await file.close()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "upload too large")
+
+    base = Path(file.filename or "import").name
+    name = re.sub(r"[^A-Za-z0-9._ -]", "_", Path(base).stem).strip() or "Imported project"
+
+    if base.lower().endswith(".zip") or raw[:2] == b"PK":
+        entries = _zip_entries(raw)
+    else:
+        ext = Path(base).suffix.lower()
+        if ext not in UPLOAD_EXTS:
+            raise HTTPException(400, f"unsupported file type: {ext or 'unknown'}")
+        entries = [(base, raw)]
+
+    with connect() as con:
+        cur = con.execute("INSERT INTO projects (name) VALUES (?)", (name[:100],))
+        project_id = cur.lastrowid
+    src = src_dir(project_id)
+    src.mkdir(parents=True, exist_ok=True)
+
+    rows: list[tuple[str, str, int]] = []
+    total = 0
+    for rel, content in entries:
+        total += len(content)
+        if total > MAX_UPLOAD_BYTES:
+            break
+        target = src / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        rows.append((rel, _kind_for(Path(rel).suffix.lower()), len(content)))
+
+    tex_paths = [r[0] for r in rows if r[0].lower().endswith(".tex")]
+    main_file = _pick_main_file(src, tex_paths)
+    if not (src / main_file).exists():
+        (src / main_file).write_text(DEFAULT_TEX, encoding="utf-8")
+        rows.append((main_file, "tex", len(DEFAULT_TEX)))
+
+    with connect() as con:
+        con.executemany(
+            """INSERT INTO files (project_id, path, kind, size) VALUES (?,?,?,?)
+               ON CONFLICT(project_id, path)
+               DO UPDATE SET size=excluded.size, updated_at=CURRENT_TIMESTAMP""",
+            [(project_id, rel, kind, size) for rel, kind, size in rows],
+        )
+        con.execute(
+            "UPDATE projects SET main_file=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (main_file, project_id),
         )
         row = con.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
     return dict(row)
@@ -624,6 +740,34 @@ def get_log(project_id: int):
     if not logs:
         raise HTTPException(404, "no log yet")
     return {"log": logs[-1].read_text(encoding="utf-8", errors="replace")}
+
+
+def _main_file(project_id: int) -> str:
+    with connect() as con:
+        row = con.execute("SELECT main_file FROM projects WHERE id=?", (project_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "project not found")
+    return row["main_file"]
+
+
+@app.get("/api/projects/{project_id}/synctex/view")
+def synctex_view(project_id: int, file: str, line: int, column: int = 0):
+    """Forward search: source (file, line) -> PDF page and position."""
+    main_file = _main_file(project_id)
+    res = synctex.forward(project_id, main_file, file, line, column)
+    if not res:
+        raise HTTPException(404, "no SyncTeX data — recompile the project first")
+    return res
+
+
+@app.get("/api/projects/{project_id}/synctex/edit")
+def synctex_edit(project_id: int, page: int, x: float, y: float):
+    """Inverse search: PDF (page, x, y) -> source file and line."""
+    main_file = _main_file(project_id)
+    res = synctex.inverse(project_id, main_file, page, x, y)
+    if not res or not res.get("line"):
+        raise HTTPException(404, "no SyncTeX data — recompile the project first")
+    return res
 
 
 @app.get("/api/projects/{project_id}/export.zip")
